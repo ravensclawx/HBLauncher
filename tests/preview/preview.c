@@ -250,7 +250,7 @@ int main(int argc, char **argv) {
             "SDK sample - on-screen keys and touch",
             "Copy an app package into apps/ to add it here"
         };
-        /* The shipped catalog has three titles; extra synthetic entries let
+        /* The shipped catalog has two titles; extra synthetic entries let
          * the preview exercise the page-dot state offline. */
         uint32_t count = 8, offset = 0, index;
         catalog = calloc(1, sizeof *catalog);
@@ -297,7 +297,7 @@ int main(int argc, char **argv) {
         float t = (float)frame * 0.75f;
         state->time = t;
         state->fps_milli = 59900u;   /* the footer readout */
-        state->count = 3;
+        state->count = 2;
         state->selected = 0;
         state->row_highlight[0] = 1.0f;
         state->row_highlight[1] = 0.0f;
@@ -308,6 +308,7 @@ int main(int argc, char **argv) {
         state->refreshing = 0;
         state->refresh_spin = 0.35f;
         state->toast_frames = 0;
+        if (frame >= 2 && frame <= 4) state->count = 3; /* Synthetic input demo coverage. */
         if (frame == 2) { state->selected = 2; state->row_highlight[0] = 0.0f;
                           state->row_highlight[2] = 1.0f; }
         if (frame == 3) { state->mode = LAUNCHER_MODE_LAUNCH; state->transition = 0.85f;

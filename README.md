@@ -1,4 +1,8 @@
-# HBLauncher Native
+# HBLauncher
+
+![HBLauncher interface](assets/screenshots/hblauncher.png)
+
+*Offline capture from the actual launcher renderer, showing the included demos.*
 
 A native AArch64 homebrew launcher and app SDK for Nintendo Switch 2, by
 **RavensClawX**. The launcher runs inside a SmileBASIC application process
