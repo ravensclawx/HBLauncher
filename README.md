@@ -7,10 +7,6 @@ A native AArch64 homebrew launcher and app SDK for Nintendo Switch 2, by
 with an externally established, verified 4/4 session. CPU code handles the UI
 layout, animation, and input; Vulkan draws the interface.
 
-This is an experimental source release. Offline tests exercise the runtime,
-loader, and renderer, but do not establish compatibility with your console or
-system version. The exploit chain and its setup are separate projects.
-
 ## Features
 
 - App catalog with controller navigation, animated transitions, and return to launcher.
