@@ -246,7 +246,7 @@ static void draw_header(struct hbx_ui_impl *impl, const struct launcher_state *s
     hbx_ui_engine_text(impl, 164.0f, 66.0f, HBX_FONT_TINY,
                        "N I N T E N D O   S W I T C H   2", C(207, 245, 255));
     hbx_ui_engine_text(impl, 158.0f, 126.0f, HBX_FONT_TITLE, "HBLauncher", C(255, 255, 255));
-    hbx_ui_engine_text(impl, 164.0f, 250.0f, HBX_FONT_BODY, "V 1.0.0  NATIVE", C(217, 247, 255));
+    hbx_ui_engine_text(impl, 164.0f, 250.0f, HBX_FONT_BODY, "v.1.0.0", C(217, 247, 255));
     draw_emblem(impl, state->time, state->refresh_spin);
     if (state->refreshing) {
         /* Subtle, slightly breathing label under the turning emblem. */
@@ -468,32 +468,7 @@ static void draw_footer(struct hbx_ui_impl *impl, const struct launcher_state *s
     }
 
     hbx_ui_engine_text(impl, 36.0f, 1016.0f, HBX_FONT_TINY,
-                       "HBLauncher Native  -  CPU UI + Vulkan", COLOR_CREDIT);
-    if (state->fps_milli > 0) {
-        char fps[24];
-        uint32_t whole = state->fps_milli / 1000u;
-        uint32_t fraction = (state->fps_milli / 100u) % 10u;
-        if (whole > 999u) whole = 999u;
-        uint32_t i = 0, d = 0;
-        char digits[8];
-        if (whole >= 100u) { digits[d++] = (char)('0' + (whole / 100u) % 10u); i++; }
-        if (whole >= 10u) { digits[d++] = (char)('0' + (whole / 10u) % 10u); i++; }
-        digits[d++] = (char)('0' + whole % 10u); i++;
-        {
-            uint32_t k;
-            for (k = 0; k < d; k++) fps[k] = digits[k];
-        }
-        fps[i++] = '.';
-        fps[i++] = (char)('0' + fraction);
-        fps[i++] = ' ';
-        fps[i++] = 'F';
-        fps[i++] = 'P';
-        fps[i++] = 'S';
-        fps[i] = 0;
-        hbx_ui_engine_text(impl, 36.0f + 330.0f, 1016.0f, HBX_FONT_TINY, fps,
-                           C(122, 158, 178));
-    }
-
+                       "@ravensclawx", COLOR_CREDIT);
     if (state->toast_frames > 0) {
         float width = hbx_ui_engine_text_width(HBX_FONT_SMALL, state->toast) + 44.0f;
         hbx_ui_engine_rect(impl, 960.0f - width * 0.5f, 296.0f, width, 40.0f, 20.0f,
@@ -565,7 +540,7 @@ static void draw_overlay(struct hbx_ui_impl *impl, const struct launcher_state *
         float x = 960.0f - panel_w * 0.5f, y = 540.0f - panel_h * 0.5f;
         hbx_ui_engine_rect(impl, x, y, panel_w, panel_h, 24.0f, COLOR_CARD);
         hbx_ui_engine_stroke(impl, x, y, panel_w, panel_h, 24.0f, 1.0f, C(191, 230, 245));
-        hbx_ui_engine_text_center(impl, 960.0f, y + 50.0f, HBX_FONT_H1, "HBLauncher Native",
+        hbx_ui_engine_text_center(impl, 960.0f, y + 50.0f, HBX_FONT_H1, "HBLauncher",
                                   COLOR_INK);
         hbx_ui_engine_text_center(impl, 960.0f, y + 110.0f, HBX_FONT_SMALL,
                                   "CPU layout and animation, real Vulkan GPU drawing.",
