@@ -19,6 +19,17 @@ layout, animation, and input; Vulkan draws the interface.
 Game ports, emulators, commercial assets, media, console keys, and compiled
 app payloads are excluded. Build the included demos from source.
 
+## Game ports
+
+These ports are maintained by **@ravensclawx** in separate repositories:
+
+- [Animal Crossing](https://github.com/ravensclawx/AnimalCrossing-HBLauncher) — based on ACGC-PC-Port.
+- [Twilight Princess](https://github.com/ravensclawx/TwilightPrincess-HBLauncher) — based on Dusklight.
+
+Set up HBLauncher using [Getting started](docs/GETTING_STARTED.md), then follow
+each port's README for build, installation, and file-server instructions.
+Both require your own supported game disc image.
+
 ## Build
 
 Use Linux with Node.js 18+, Python 3 with Pillow, GCC, the AArch64 GNU
