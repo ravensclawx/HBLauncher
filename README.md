@@ -1,536 +1,122 @@
-# HBLauncher
+# HBLauncher Native
 
-Maintained by **RavensClawX**.
+A native AArch64 homebrew launcher and app SDK for Nintendo Switch 2, by
+**RavensClawX**. The launcher runs inside a SmileBASIC application process
+with an externally established, verified 4/4 session. CPU code handles the UI
+layout, animation, and input; Vulkan draws the interface.
 
-> **USE AT YOUR OWN RISK.** This software is provided as-is, without warranties.
-> RavensClawX and contributors are not
-> responsible for damage to your Nintendo Switch 2, PC, Pico, or other hardware;
-> data loss; corrupted saves; or other consequences of using this software.
-> Back up important data before making changes. Apps using filesystem features
-> can modify or delete real SmileBASIC files.
+This is an experimental source release. Offline tests exercise the runtime,
+loader, and renderer, but do not establish compatibility with your console or
+system version. The exploit chain and its setup are separate projects.
 
-**First time? Follow [Getting Started](docs/GETTING_STARTED.md)** for the complete
-Pico setup, SmileBASIC entry and first launch. Prebuilt GPU assets are included;
-you do not need to compile the launcher to run it.
+## Features
 
-A homebrew app launcher running through **SmileBASIC on Nintendo Switch 2**.
-Browse apps on the console, launch independent GPU programs, and return to the
-menu. The included **Hello World** app is a complete starting point for your own
-software, including source, build script, icon, input handling, and an exit path.
+- App catalog with controller navigation, animated transitions, and return to launcher.
+- Native package loader and a versioned SDK ABI.
+- Freestanding runtime with input, touch, timing, heap, logging, and package assets.
+- Shared Vulkan display and a small 2D UI library, plus a raw Vulkan example.
+- Original Hello CPU and GPU Triangle demo apps.
+- Mock console backend and an offline Vulkan preview for development.
 
-The computer hosts the app library and keeps the bridge alive. Application logic
-runs in compute shaders and graphics run in vertex/fragment shaders on the
-console GPU. This is a GPU app environment, not an NRO loader, native ARM64 app
-loader, standalone installed title, or custom firmware.
+Game ports, emulators, commercial assets, media, console keys, and compiled
+app payloads are excluded. Build the included demos from source.
 
-The included **[HB SDK](sdk/README.md)** provides shared shader/build helpers,
-controller and motion input, Joy-Con 2 optical mouse input, keyboard/mouse
-telemetry, frequency/amplitude vibration envelopes,
-read-only NFC scanning and console-side UDP. The launcher itself is its
-integration example: move a detached Joy-Con 2 on a surface to control its
-cursor. **L/R** clicks with the corresponding Joy-Con in mouse mode; **ZR**
-also clicks. See the
-[capability matrix](sdk/docs/capabilities.md) for tested features and hardware
-limitations, and the [service protocol](sdk/docs/services.md) for app APIs.
+## Build
 
-## Contents
-
-- [Requirements](#requirements)
-- [Setup](#setup)
-- [Launch and controls](#launch-and-controls)
-- [SDK guide and API reference](sdk/README.md)
-- [Build your own app](#build-your-own-app)
-- [Package manifest](#package-manifest)
-- [GPU programming interface](#gpu-programming-interface)
-- [Input](#input)
-- [Graphics and assets](#graphics-and-assets)
-- [Audio](#audio)
-- [Advanced compute and memory](#advanced-compute-and-memory)
-- [Testing and troubleshooting](#testing-and-troubleshooting)
-- [Project layout](#project-layout)
-- [Credits](#credits)
-
-## Requirements
-
-The supported console configuration is **SmileBASIC 4.4.9 on Switch 2 system
-software 23.0.1**. The bridge uses version-specific addresses and checks; other
-versions are not supported. Keep more than 20 MiB free in the SmileBASIC save.
-
-You also need:
-
-- A Linux computer on a network reachable by the console and Pico. Linux x86-64
-  is the tested host platform.
-- A Raspberry Pi **Pico 2 W**, a USB data cable, and CircuitPython. The keyboard
-  bridge was used with CircuitPython 10.3.1.
-- Node.js 22+, Bash, Python 3 with Pillow, DejaVu Sans, and `spirv-val`.
-- For shader builds: `glslangValidator`.
-- For desktop GPU tests: a C compiler, Vulkan development headers, a Vulkan
-  loader, and a driver (Mesa's software driver is suitable).
-
-On Ubuntu/Debian, after installing Node.js 22+:
+Use Linux with Node.js 18+, Python 3 with Pillow, GCC, the AArch64 GNU
+compiler/binutils, glslang, SPIR-V Tools, and DejaVu fonts. The offline tests
+also need QEMU user emulation and a Vulkan implementation such as Mesa lavapipe.
+On Debian/Ubuntu, the dependency packages are:
 
 ```sh
-sudo apt-get update
-sudo apt-get install python3-pil fonts-dejavu-core glslang-tools spirv-tools \
-  build-essential libvulkan-dev mesa-vulkan-drivers
-node --version
+sudo apt install nodejs python3 python3-pil gcc gcc-aarch64-linux-gnu \
+  binutils-aarch64-linux-gnu glslang-tools spirv-tools fonts-dejavu-core \
+  qemu-user libvulkan1 mesa-vulkan-drivers
 ```
 
-No npm packages are required. Tools are normally found on `PATH`. Optional local
-copies in `tools/` are supported but are not distributed. `NODE`, `GLSLANG`,
-`SPIRV_VAL`, and `CC` override the corresponding tool paths. Set `NODE` to an
-executable path, not a command with arguments.
-
-## Setup
-
-### 1. Prepare the Pico
-
-Download CircuitPython for the [Pico 2 W](https://circuitpython.org/board/raspberry_pi_pico2_w/).
-Hold BOOTSEL while attaching the Pico to your computer, copy the board's UF2 to
-its bootloader drive, and wait for it to restart as `CIRCUITPY`.
-
-From the repository root, run this with your actual mounted drive and computer
-LAN address:
+From the repository root:
 
 ```sh
-bash smilebasic/pico-keyboard/install.sh /media/your-user/CIRCUITPY 192.168.1.10
+sh tools/build-all.sh
+sh tests/run.sh
+./hbl-start --mock
 ```
 
-The installer prompts for Wi-Fi credentials. It installs the HID library,
-`boot.py`, `code.py`, and `program.bas`, writes `settings.toml` on the Pico, and
-creates a private pairing key at `smilebasic/pico-keyboard/secret`. Keep the key;
-the host and Pico must agree. Do not share the key or `settings.toml`.
+If Node is installed outside `PATH`, set `HBL_NODE` to its executable path.
+The build regenerates the font atlas, shader blobs, and ABI metadata, then
+builds the launcher, apps, hardware probe, SDK example, and offline preview.
+Generated binaries and local state are ignored by Git.
 
-After installation, ground **GP0 to GND before connecting** whenever you need
-maintenance access to `CIRCUITPY`. Without GP0 grounded the device exposes a USB
-keyboard instead. BOOTSEL is for firmware installation, not routine file updates.
-Remove the GP0 jumper before connecting the Pico to the console.
-
-### 2. Save the bootstrap in SmileBASIC
-
-Set the console's USB keyboard language to **English (US)**. In SmileBASIC's
-program editor, enter [smilebasic/bootstrap.bas](smilebasic/bootstrap.bas) into
-slot 0 and save it as **NS2**.
-
-The Pico can type it for you: focus an empty `EDIT0` editor, ground **GP1 to GND**,
-and attach the Pico to the console. It waits before typing `program.bas`; allow
-roughly eight minutes and then save as NS2. Disconnect and remove the GP1 jumper.
-Do not use bootstrap-entry mode while a different text field is focused.
-
-### 3. Prepare the host
-
-Allow inbound TCP **39380** (console bridge) and **39381** (Pico keyboard bridge)
-on your local network. The Pico and console independently connect to the host.
-Guest-network isolation can prevent this even when Wi-Fi appears connected.
-The internal RPC service listens on loopback and uses a per-session token.
-
-## Launch and controls
-
-1. Start a fresh console/SmileBASIC session and open **Direct mode**.
-2. Run from the repository root, substituting the computer's LAN address:
-
-   ```sh
-   ./start.sh 192.168.1.10
-   ```
-
-3. Connect the configured Pico to the console with GP0/GP1 ungrounded.
-4. The Pico loads NS2, runs the bootstrap, issues `REMOVE`, and enters the fresh
-   connection command. The expected `Out of memory` response to `REMOVE` is part
-   of this sequence. Let it finish. The host checks the session, creates the
-   display, uploads the catalog, and starts the launcher.
-5. Keep the host running and computer awake throughout the session.
-
-Use **D-pad Up/Down** or the **left stick** to select an app, then **A** to open it.
-You can also tap an app row. The top-right refresh control rescans the host's
-app folders. D-pad Left/Right do not
-change the catalog.
-Joy-Con 2 optical movement controls the cursor; **L/R** clicks while the
-corresponding Joy-Con is tracking, and **ZR** also clicks a hovered row or Refresh. The cursor hides when optical tracking stops. The launcher has no separate System menu.
-Hello World uses **B** or **Minus** to return to the menu. Other apps define their
-own controls and must implement a return action.
-
-Press **Ctrl+C** in the host terminal to stop its processes. Console allocations
-are retained for the session; restart SmileBASIC/the console to release them.
-After a failed native session, restart the console before retrying. Never repeat
-`REMOVE` within the same application process or reuse an old session's addresses.
-
-## Build your own app
-
-### Generate an app with the SDK
+To render preview frames after building:
 
 ```sh
-node sdk/create-app.cjs my-app "My App"
+./build/preview/hbl-preview tests/preview/out 6
 ```
 
-The generator copies the working Hello World source, sets the ID and display
-name, and refuses to overwrite an existing folder. Edit its description/version
-in `app.json`. See [the SDK guide](sdk/README.md) for input helpers, motion,
-networking, NFC, vibration, shader examples and the exact memory protocol.
+The preview uses a synthetic catalog. Tests default to the lavapipe ICD at
+`/usr/share/vulkan/icd.d/lvp_icd.json`; set `VK_ICD_FILENAMES` if your system
+uses a different path.
 
-The example is deliberately small:
+## Console setup
 
-| File | What to change |
+Provide a separate `ns2jb-kurumuz` checkout and establish the required session.
+The launcher requires verified 4/4 before mapping native code.
+
+```sh
+export HBL_NS2JB=/path/to/ns2jb-kurumuz
+./hbl-start --preflight
+./hbl-start
+```
+
+See [Getting started](docs/GETTING_STARTED.md) and [Recovery](docs/RECOVERY.md)
+for session setup and diagnostics. `--spawn --guide` additionally requires the
+external controller tooling described there.
+
+| Variable | Purpose |
 | --- | --- |
-| `app.json` | Name, ID, version, icon and asset paths |
-| `shaders/app.comp` | Per-frame logic and controller handling |
-| `shaders/app.frag` | Screen rendering |
-| `shaders/app.vert` | Full-screen triangle; normally leave it alone |
-| `assets.py` | Text atlas and terminal-style icon generation |
-| `build.cjs` | Initial state and shader compilation |
-| `check.cjs` in Hello World | Reference desktop render and input regression checks |
+| `HBL_NODE` | Node executable |
+| `HBL_NS2JB` | External session runner checkout |
+| `HBL_APPS` | Alternate app package directory |
+| `HBL_RPC_TARGET` | Console RPC address |
+| `HBL_PICO_TOOL` | External controller tool for guided setup |
+| `HBL_COMPAT_ROOT` | Optional external legacy compatibility projects |
 
-Edit the greeting strings in `assets.py`, replace its icon drawing with your own
-art, and edit `app.frag` to change the screen. The builder regenerates the icon,
-so edit the generator or remove that generation step before supplying a custom PNG.
-
-Build from the repository root:
+## Develop an app
 
 ```sh
-node apps/my-app/build.cjs
+python3 sdk/tools/hbx-new.py apps/my-app "My App"
+python3 sdk/tools/hbx-build.py apps/my-app
 ```
 
-The build copies the shared ABI/drawing helpers, writes the initial state,
-generates assets, compiles the three shaders for Vulkan 1.0, and validates their
-SPIR-V. Generated `.spv`, `.bin`, and `.png` files are part of the distributable
-app. Include them alongside `app.json`; users should not have to compile an app
-just to install it. Keep source and build scripts with your package for others
-to learn from or modify.
+Read the [SDK guide](docs/SDK.md), [SDK reference](sdk/README.md), and
+[raw Vulkan example](sdk/examples/raw-vulkan/). The optional
+[Linux personality runtime](sdk/linux/README.md) requires a separately
+configured musl toolchain and is not built by the default build.
 
-### Install, refresh, and iterate
+## Source layout
 
-Apps live on the **host PC**, in immediate subdirectories of `apps/`.
-Download and extract a prebuilt app package, then copy its folder so the manifest
-is at `apps/my-app/app.json`. Keep all packaged assets beside it as supplied;
-do not leave the package zipped or nest it inside another download folder.
-Tap **Refresh** in the launcher to make it appear. Prebuilt apps need no compiling
-and no files copied onto the Pico or console SD card.
-
-To **update** an app, return to the launcher, replace its folder with the new
-package, then Refresh and relaunch. To **remove** an app, return to the launcher,
-delete or move its folder out of `apps/`, then Refresh. Hidden directories are ignored. To use another
-library, launch with an absolute path:
-
-```sh
-HB_APPS_DIR=/absolute/path/to/my-library ./start.sh 192.168.1.10
-```
-
-Return to the menu before rebuilding an app, then refresh and relaunch. The host
-fingerprints manifests and assets. It rejects a package that changed between
-scan and launch, and caches pipelines for unchanged versions. Each launch resets
-app state and optional private memory to their packaged initial values.
-
-The catalog accepts at most **32 apps**. Invalid folders are listed under
-`catalog.rejected` in `runs/launcher-*/app-runtime.json`; a bad package does not
-prevent valid apps from appearing. To inspect validation directly:
-
-```sh
-node -e "const c=require('./homebrew-launcher/app-catalog.cjs');c.scan().then(x=>console.log(JSON.stringify(c.summary(x),null,2)))"
-```
-
-## Package manifest
-
-A minimal complete package uses:
-
-```json
-{
-  "format": "hblauncher.gpu-app",
-  "abi": 1,
-  "id": "my-app",
-  "name": "My App",
-  "version": "1.0.0",
-  "description": "What this app does",
-  "icon": "assets/icon.png",
-  "initialState": "assets/state.bin",
-  "data": "assets/text.bin",
-  "shaders": {
-    "vertex": "app.vert.spv",
-    "fragment": "app.frag.spv",
-    "compute": "app.comp.spv"
-  }
-}
-```
-
-All asset paths are relative to the package directory. Absolute paths, `..`, and
-symlinks escaping the package are rejected.
-
-| Field | Contract |
+| Directory | Contents |
 | --- | --- |
-| `format`, `abi` | Exactly `hblauncher.gpu-app` and `1` |
-| `id` | 1–48 lowercase letters, digits, or hyphens; first character alphanumeric |
-| `name` | Nonempty, at most 64 characters |
-| `version` | String, at most 32 characters; use semantic versions by convention |
-| `description` | String, at most 160 characters |
-| `icon` | Valid PNG, at most 2 MiB and 4096×4096; square artwork recommended |
-| `initialState` | Exactly 1024 bytes |
-| `data` | Nonempty binary data, at most 7 MiB |
-| `shaders` | Each SPIR-V file ≤1 MiB with a `main` entry of the correct stage |
-| `transition` | Optional `fade` (default behavior) or `none` |
-| `audio` | Optional sound effects, described below |
-| `memory` | Optional private storage buffer, described below |
-| `computeSequence` | Optional multi-pass compute, described below |
+| `launcher/` | Native launcher, navigation, and Vulkan UI |
+| `host/` | Session management, package loading, and app lifecycle |
+| `sdk/` | ABI headers, runtime, templates, examples, and build tools |
+| `apps/` | Original demo source packages |
+| `assets/` | Font atlas and font license notice |
+| `docs/` | Architecture, SDK, setup, and recovery guides |
+| `tests/` | ABI, mock lifecycle, navigation, and rendering checks |
+| `tools/` | Asset generators and development utilities |
 
-The JSON manifest itself is limited to 16 KiB. Host service extensions are not
-supported; omit `service`.
+## Source release
 
-## GPU programming interface
+Run `python3 tools/package-release.py` to create
+`release/hblauncher-native-source.tar.gz` from the current source tree.
+It excludes Git history, build products, local settings, and user app assets,
+and checks the included files for private workstation identifiers.
+Use this archive for a fresh public repository; the existing local Git history
+still contains earlier versions and is not sanitized by deleting working files.
 
-The launcher owns the Vulkan device, swapchain, command submission, controller
-polling, and app switching. An app supplies shaders and data, not host JavaScript.
-The package's build script runs on the developer's PC only; installing a package
-does not execute that script.
+## License
 
-The runtime binds an **8 MiB storage buffer at set 0, binding 0**. All three stages
-can access it. The first 1024 bytes are the ABI state; `data` begins at byte 1024.
-The copied `shaders/abi.glsl` gives an exact `std430` declaration. Do not reorder,
-resize, or remove its fields. Some names reflect the original game example; the
-byte layout is the public contract.
-
-| Byte offset | GLSL field | Purpose |
-| --- | --- | --- |
-| 0–63 | `raw[4]` | Controller input; overwritten every frame |
-| 64–79 | `motion` | Example timing/UI values; `motion.x` is elapsed simulated seconds |
-| 80–95 | `state` | Example state; `state.y` holds previous buttons, `state.z` frame count |
-| 96–111 | `refresh` | Menu refresh bookkeeping; leave intact unless your app needs it |
-| 112–127 | `library` | Menu values; `library.z` at 120 is reserved |
-| 128–783 | `touch[164]` | Touch input; overwritten every frame |
-| 784–959 | `game`, `piece`, `flow`, `bagMeta`, `bag`, `rows` | App-owned working state |
-| 960–975 | `transition` | `x`: fade opacity; other components reserved for transition conventions |
-| 976–991 | `events` | `x`: sound event sequence, `y`: sound effect ID |
-| 992–1007 | `stats` | Additional app-owned state |
-| 1008–1023 | `reserved` | Runtime messages; see below |
-| 1024 onward | `atlas[]` | App data as 32-bit words; use your own packing convention |
-
-The host clears the full shared buffer when loading an app, copies initial state
-and data, and clears launch/exit requests.
-App state is transient: there is no persistence/save API.
-
-### Compute and exit
-
-The default pipeline dispatches **one workgroup `(1,1,1)` per frame**, then draws
-a full-screen triangle. Start with `layout(local_size_x=1) in;`. More local
-invocations require explicit synchronization and race-free state ownership;
-there is no configurable dispatch grid in this ABI.
-
-```glsl
-#version 450
-#extension GL_GOOGLE_include_directive : require
-layout(local_size_x=1) in;
-#include "abi.glsl"
-
-void main() {
-    uint buttons = c.raw[0].z;
-    uint pressed = buttons & ~c.state.y;
-    c.motion.x += 1.0 / 60.0;
-    c.state.z++;
-    c.transition.x = max(0.0, c.transition.x - 1.0 / 15.0);
-    bool connected = (c.raw[2].x & 1u) != 0u;
-    if (connected && (pressed & (2u | 2048u)) != 0u)
-        c.reserved.z = 1u; // B or Minus requests return to the menu
-    c.state.y = buttons;
-}
-```
-
-`reserved.y` (byte 1012) is the menu's one-based launch request. Apps should not
-write it. `reserved.z` (byte 1016) requests exit when nonzero. The host checks
-requests at a **60-frame cycle boundary**, so switching can take about a second.
-Rendering repeats on-console without waiting for a host poll between cycles.
-App switches and explicit service requests pause the worker at a boundary.
-Keep the exit request set until the host processes it. Do not zero it next frame.
-`reserved.w` is the menu's installed count, not app storage.
-
-A typical app starts with float `1.0` at offset 960 and gradually reduces it to
-zero. Multiply rendered RGB by `1.0 - c.transition.x` to fade in. With
-`transition: "none"`, the runtime initializes that opacity to zero. A manifest
-alone cannot add a visual fade to shaders that ignore opacity.
-
-The example's `1/60` timestep is a simulation convention, not a measured delta.
-The loop reports continuous cycle intervals; exact scanout timing is not guaranteed.
-
-## Input
-
-`c.raw[0].z` contains the low 32 controller button bits. Use `buttons & ~previous`
-for a new press and update `previous` after processing input.
-
-| Bit | Button |
-| --- | --- |
-| 0, 1, 2, 3 | A, B, X, Y |
-| 4, 5 | Left/right stick click |
-| 6, 7, 8, 9 | L, R, ZL, ZR |
-| 10, 11 | Plus, Minus |
-| 12, 13, 14, 15 | D-pad Left, Up, Right, Down |
-
-Left stick X/Y are `int(c.raw[1].x)` / `int(c.raw[1].y)`; right stick X/Y are
-`int(c.raw[1].z)` / `int(c.raw[1].w)`. Convert to signed integers before normalizing
-by `32767.0`, clamp to `[-1,1]`, and apply your own deadzone. Positive Y is up.
-`(c.raw[2].x & 1u) != 0u` indicates connection. The current runtime polls the
-handheld controller ID (32); separate multiplayer controller enumeration is not
-implemented.
-
-Touch count is `c.touch[2]`. For contact `i` (0–15), the entry advances by ten
-32-bit words: attributes `touch[6+10*i]`, ID `touch[7+10*i]`, X
-`touch[8+10*i]`, Y `touch[9+10*i]`. Bit 1 of attributes indicates an ending
-contact. Coordinates use a 1280×720 space; multiply by 1.5 to match the 1920×1080
-render target. Bound contact count to 16 and distinguish contacts using IDs.
-
-## Graphics and assets
-
-Vertex and fragment shaders use `#version 450`; includes need
-`GL_GOOGLE_include_directive`. Every stage entry point is `main`. The renderer
-calls `vkCmdDraw` with three vertices, no vertex buffers, and no depth buffer.
-The example vertex shader derives a full-screen triangle from `gl_VertexIndex`.
-
-Fragment shaders write `layout(location=0) out vec4 outColor`. Render at
-1920×1080 using `gl_FragCoord.xy`; the example uses top-left-style screen
-coordinates. The pipeline has no app-configurable textures, blending state,
-mesh uploads, or push constants. Draw procedurally or read packed pixel data
-from storage. Keep fragment buffers `readonly` where possible.
-
-Hello World's atlas is a 1024×2048 grayscale image packed into `data`. Its
-`draw.glsl` helper extracts a byte from `c.atlas[]` and treats it as text opacity.
-`assets.py` rasterizes font glyphs at build time and generates rectangle constants
-in `shaders/text.glsl`. There is no console font dependency. You can replace this
-format entirely; the runtime treats `data` as opaque bytes.
-
-Icons are separate PNG files rasterized into the menu catalog on the PC. A
-256×256 RGBA source works well; the menu scales the artwork down.
-
-## Audio
-
-The launcher is silent. An app can supply short sound effects:
-
-```json
-"audio": {
-  "sampleRate": 48000,
-  "channels": 2,
-  "format": "s16le",
-  "effects": { "1": "sounds/click.pcm", "2": "sounds/confirm.pcm" }
-}
-```
-
-Files are raw stereo, interleaved signed 16-bit little-endian PCM at 48 kHz,
-without WAV headers. Each must be nonempty, divisible by four bytes, and no more
-than 131072 bytes (about 0.68 seconds). IDs are integers 1–31 expressed as JSON
-keys. Emit an event by setting `c.events.y` to the ID and incrementing
-`c.events.x`. The host polls the event sequence; rapid events can coalesce, so
-this is not a sample-accurate sequencer or app music streaming API. Sound effects
-are played by the host's console audio worker. Hello World has no effects.
-
-## Advanced compute and memory
-
-Most apps need only the shared buffer. For additional state, request a private
-storage buffer at **set 0, binding 1**:
-
-```json
-"memory": {
-  "bytes": 1048576,
-  "initial": "assets/memory.bin"
-}
-```
-
-`bytes` must be a multiple of 4096, between 4096 and 33554432 (32 MiB). The initial
-file must be nonempty and fit the allocation; the remaining bytes are zeroed.
-Optional `"encoding": "deflate"` accepts a zlib-wrapped deflate stream, as produced
-by Node's `zlib.deflateSync`. The runtime restores initial memory on each launch.
-
-Declare a corresponding storage block in shaders that need it:
-
-```glsl
-layout(set=0, binding=1, std430) buffer PrivateMemory { uint words[]; } memory;
-```
-
-For multi-pass work:
-
-```json
-"computeSequence": {
-  "begin": "begin.comp.spv",
-  "after": "after.comp.spv",
-  "repeat": 8
-}
-```
-
-Each frame runs `begin` once, then repeats `compute` → `after` between 1 and 512
-times before rendering. Each dispatch is one workgroup. The runtime inserts
-compute memory barriers between passes. Count frame time and input edges once
-in `begin`, not in every repeated pass. Keep workloads bounded: expensive or
-nonterminating shaders can stall the display or session.
-
-## Testing and troubleshooting
-
-Rebuild the launcher and example, run package/runtime tests, and execute menu
-compute fixtures on desktop Vulkan:
-
-```sh
-bash homebrew-launcher/build-launcher.sh --check
-node apps/hello-world/check.cjs
-```
-
-The second command exercises idle input, B/Minus exit, held buttons, and a
-controller-disconnected case; it renders the actual app shaders to a temporary
-PNG. After copying the example, adapt `check.cjs` to your app's controls and
-expected behavior. Desktop tests do not replace console tests.
-
-To rebuild the desktop helper executables explicitly:
-
-```sh
-REBUILD_CHECKS=1 bash scripts/build-checks.sh
-```
-
-GitHub Actions builds shaders and runs desktop tests. It cannot validate USB
-keyboard delivery or console execution.
-
-| Problem | Check |
-| --- | --- |
-| No Pico connection | Host IP, pairing key, Wi-Fi settings, port 39381, and GP0/GP1 jumpers |
-| Pico types but console never connects | Direct-mode focus, saved NS2 program, keyboard language, port 39380, supported versions |
-| App missing | `catalog.rejected`, duplicate IDs, missing assets, validator/Pillow installation |
-| App changed error | Return to menu, finish the build, tap Refresh, relaunch |
-| Black app screen | Fragment output, fade opacity, atlas offsets, shader validation, desktop preview |
-| No return to menu | Keep `reserved.z` nonzero; allow a batch to finish; check connected-controller input |
-| Native verification failure | Restart console; verify versions; do not bypass byte checks |
-| Slow initial launch | Music/data uploads and pipeline compilation occur before interactive execution |
-| Many rebuilds exhaust session resources | Restart the session; pipelines are retained and cached, with a 64-version limit |
-
-Session logs and captures live in `runs/launcher-*`. They contain local addresses,
-connection tokens, and memory captures; do not include the directory in app
-packages or public bug reports. Share selected error messages after reviewing
-what they contain. The bridge verifies known instruction ranges before use;
-full SDK dumps and old sessions are not runtime dependencies.
-
-## Project layout
-
-```text
-sdk/                   Documented app API, build tools, native adapters and tests
-apps/hello-world/       Complete example app and compiled assets
-homebrew-launcher/     Menu, app runtime, renderer, audio and desktop tests
-smilebasic/            BASIC bootstrap and native host bridge
-  engine/              Connection, call frames and version checks
-  pico-keyboard/       Pico firmware scripts, installer and HID library
-  reference/           Small version-specific SDK verification records
-scripts/               Tool discovery and desktop helper builds
-start.sh               Host entry point
-```
-
-The repository includes application source and generated runtime assets.
-Development tool installations, credentials, session output, and compiled
-desktop test helpers are excluded.
-
-## Credits
-
-The SmileBASIC entry path derives from [pepsipu/ns2jb](https://gitlab.com/pepsipu/ns2jb).
-The Pico uses [Adafruit CircuitPython HID](https://github.com/adafruit/Adafruit_CircuitPython_HID);
-its MIT notice is included beside the vendored library. CircuitPython, Node.js,
-Khronos glslang/SPIRV-Tools, Vulkan, Pillow, and DejaVu provide the supporting tools.
-
-No blanket project license has been assigned here; retain third-party
-notices and resolve redistribution permissions before publishing a licensed
-release. Nintendo, SmileBASIC, and their trademarks belong to their respective
-owners; this is an independent project.
-
-## FTP app
-
-[ftpd-sb](https://github.com/ravensclawx/ftpd-sb) is a separate app for transferring
-SmileBASIC files from a PC FTP client. It requires HBLauncher **v0.2.0 or newer**.
-Its release ZIP installs as `apps/ftpd-sb/`; refresh the launcher after copying.
-The SDK service starts with the host; open the app and press A to listen.
-`/save` and `/tmp` support reads and writes; `/rom` is read-only. This is not
-SD-card access. See the app README and [SDK FTP guide](sdk/docs/ftp.md).
+[MIT](LICENSE), copyright RavensClawX and contributors. The font atlas retains
+its separate [third-party notice](THIRD_PARTY.md). This independent project is
+not affiliated with or endorsed by Nintendo.

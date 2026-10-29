@@ -1,0 +1,20 @@
+#!/bin/sh
+# One-command start for HBLauncher Native.
+#
+# Finds a Node runtime (PATH, $HBL_NODE, or the workspace tools/node), runs the
+# preflight, attaches to a verified 4/4 session (or starts the runner) and maps
+# the launcher.  Use --mock for a console-free end-to-end run.
+set -e
+HERE=$(cd "$(dirname "$0")" && pwd)
+NODE=${HBL_NODE:-}
+if [ -z "$NODE" ]; then
+  for candidate in node nodejs "$HERE/../tools/node" "$HOME/Development/tools/node" /usr/local/bin/node; do
+    if command -v "$candidate" >/dev/null 2>&1; then NODE=$(command -v "$candidate"); break; fi
+    if [ -x "$candidate" ]; then NODE="$candidate"; break; fi
+  done
+fi
+if [ -z "$NODE" ]; then
+  echo "hbl-start: Node.js not found. Install node 18+ or set HBL_NODE=/path/to/node" >&2
+  exit 2
+fi
+exec "$NODE" "$HERE/host/start.cjs" "$@"

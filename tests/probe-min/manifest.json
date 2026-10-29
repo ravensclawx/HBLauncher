@@ -1,0 +1,10 @@
+{
+  "id": "probe-min",
+  "name": "Probe Min",
+  "description": "Diagnostic image: proves mapping, ABI and code publish",
+  "version": "1.0.0",
+  "abi": 3,
+  "kind": "native",
+  "assets": [],
+  "limits": {"heap_bytes": 262144, "stack_bytes": 262144, "frames": 1}
+}

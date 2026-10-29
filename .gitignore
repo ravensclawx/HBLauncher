@@ -1,13 +1,35 @@
-/runs/
-/tools/
-/smilebasic/reference/*.bin
-/smilebasic/pico-keyboard/secret
+# Generated output
+build/
+**/build/
+node_modules/
 __pycache__/
-*.pyc
-**/settings.toml
-.env
-.venv/
-/homebrew-launcher/game-compute-check
-/homebrew-launcher/game-render
+*.py[cod]
+*.o
+*.elf
+*.a
+*.bin.tmp
+*.log
+tests/preview/out/
+release/
 
-/dist/
+# Local state and external checkouts
+.env
+.env.*
+!.env.example
+*.local.json
+run/
+saves/
+reference/
+
+# App payloads and user-supplied media
+apps/*/code.bin
+apps/*/data.bin
+apps/*/assets/
+*.nes
+*.z64
+*.nsp
+*.xci
+*.wad
+*.iso
+*.nds
+*.keys

@@ -1,170 +1,111 @@
-# First launch, from an empty setup
+# Getting started
 
-Maintainer: **RavensClawX**.
+This walks from a fresh checkout to the launcher on the console, and from there
+to your own app.  If something is already broken, read `RECOVERY.md` first.
 
-This guide is for **Nintendo Switch 2 system 23.0.1**, **SmileBASIC 4.4.9**,
-a **Raspberry Pi Pico 2 W**, and a **Linux computer**. Match those exact versions;
-“latest version” is not a compatibility check. This project does not supply
-SmileBASIC or console firmware. You need an installed, working copy of the
-supported SmileBASIC version. Other boards, operating systems and versions are
-not certified by this release.
+## 0. Prerequisites
 
-You do not need to compile the launcher to try the release. Its GPU shaders and
-Hello World assets are included. The computer must stay running while you use it.
+| need | why |
+| --- | --- |
+| Node 18+ (`HBL_NODE` if not on `PATH`) | host loader, preflight, tests |
+| `gcc-aarch64-linux-gnu` + binutils | freestanding images |
+| Python 3 + Pillow | font atlas and icon generation |
+| `glslang-tools`, `spirv-tools` | shader blobs (only when regenerating) |
+| `ns2jb-kurumuz` checkout | exploit chain and run directories (`HBL_NS2JB`) |
+| Pico Pro Controller + capture card | driving SmileBASIC, screenshots |
 
-## 1. Gather the hardware
+The SDK itself only needs the AArch64 toolchain; the console session needs
+everything else.
 
-- Switch 2 with the supported software and more than 20 MiB free in SmileBASIC's save.
-- Pico **2 W** (the wireless model), plus a USB **data** cable that fits the console.
-- Two removable jumper wires to connect GP0 or GP1 to a **GND** pin when instructed.
-- A Linux computer and a network that allows the Pico and console to reach it.
-
-Use the board's GP labels/pinout, not the pin's physical position counted from a
-corner. [Raspberry Pi's Pico documentation](https://www.raspberrypi.com/documentation/microcontrollers/pico-series.html)
-has the official pinout. Disconnect USB before changing jumpers. Do not connect
-a GPIO to a power pin for these modes.
-
-## 2. Extract the complete project and install host tools
-
-Extract the source release into a normal writable folder. Open a terminal in
-that folder; `start.sh`, `README.md`, `smilebasic/`, `sdk/` and `apps/` should be
-visible. All commands below run from that folder.
-
-Install Node.js 22 or newer using [Node's official instructions](https://nodejs.org/en/download).
-On Ubuntu/Debian, install the remaining runtime tools:
+## 1. Build and test offline (no console)
 
 ```sh
-sudo apt-get update
-sudo apt-get install python3 python3-pil fonts-dejavu-core spirv-tools
-node scripts/doctor.cjs --host-only
+sh tools/build-all.sh     # assets, launcher, apps, example, preview
+sh tests/run.sh           # ABI/runtime, host lifecycle, real-Vulkan UI tests
+./hbl-start --mock        # full lifecycle against a scripted backend
 ```
 
-Every line should say `OK`. The checker does not install software or change the
-console. Building apps adds `glslang-tools`; desktop GPU testing also needs a C
-compiler, `libvulkan-dev` and a Vulkan driver. The release runs on the console
-GPU, so a gaming GPU in the computer is not required.
+`--mock` prints the launch → app-return → resume → exit sequence with the same
+code paths the console uses.  It is the fastest way to check a change.
 
-Find the computer's LAN IPv4 address in its network settings, or run:
+The preview binary renders the actual launcher screen on the workstation:
 
 ```sh
-hostname -I
+VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json \
+  ./build/preview/hbl-preview tests/preview/out 6
+# PPM frames land in tests/preview/out, one per state (library, selected,
+# launching, returned, empty)
 ```
 
-Choose the address on the network shared with the console/Pico. Do not use
-`127.0.0.1`, a VPN-only address, or the console's own address. The examples use
-`192.168.1.10`; replace it with yours everywhere. A DHCP reservation for the
-computer avoids having to update the Pico when the address changes.
+## 2. Prepare the console session
 
-## 3. Install CircuitPython on the Pico
-
-1. Download CircuitPython specifically for the [Raspberry Pi Pico 2 W](https://circuitpython.org/board/raspberry_pi_pico2_w/).
-   CircuitPython 10.3.1 was used for the tested setup.
-2. With the Pico unplugged, hold **BOOTSEL** while connecting it to the computer.
-3. Copy the downloaded `.uf2` file to the bootloader drive.
-4. Wait for it to reboot. A drive called **CIRCUITPY** should appear.
-5. Find that drive's actual mount path in your file manager. On many Linux
-   desktops it looks like `/media/your-user/CIRCUITPY`.
-
-Run the installer, substituting the drive path and computer address:
-
-```sh
-bash smilebasic/pico-keyboard/install.sh /media/your-user/CIRCUITPY 192.168.1.10
-```
-
-Enter Wi-Fi credentials when prompted. The installer writes the Python code,
-HID dependency, bootstrap text and settings onto the board. It creates a local
-pairing key in `smilebasic/pico-keyboard/secret`; keep that file with your local
-project. Neither the key nor Pico `settings.toml` belongs in a public repository.
-
-Unplug after the installer finishes. The next normal boot exposes a keyboard,
-so the CIRCUITPY drive will disappear by design.
-
-## 4. Type and save the SmileBASIC bootstrap once
-
-1. Set the console's USB keyboard language to **English (US)**.
-2. Open SmileBASIC and focus an **empty EDIT0 program editor**.
-3. With the Pico unplugged, connect **GP1 to GND**. Leave GP0 ungrounded.
-4. Connect the Pico to the console. It waits about 15 seconds, then types the
-   included `program.bas`. Allow roughly eight minutes; do not type or change
-   focus while it is entering the program.
-5. Save slot 0 as **NS2**. The saved source must match
-   [bootstrap.bas](../smilebasic/bootstrap.bas).
-6. Disconnect the Pico and remove the GP1 jumper.
-
-You only need this long typing step when creating or replacing the saved
-bootstrap. The normal launch is much shorter. You can enter the source manually
-with a keyboard instead, but preserve punctuation, line breaks and character case.
-
-## 5. Start a fresh session
-
-1. Close and reopen SmileBASIC so it is a fresh application process, then open
-   **Direct mode**. Do not resume a previously failed native session.
-2. On the computer run:
+1. Power the console, let it reach HOME, and start SmileBASIC fresh.
+2. On the workstation, make sure the wired link is up:
+   `sudo ip addr add 10.42.0.1/24 dev <iface>` and `ip link set <iface> up`.
+3. `./hbl-start --preflight` — every required check must be green; optional
+   ones (console RPC, 4/4 session, Pico, capture) tell you what is missing.
+4. Start the runner and drive the bootstrap:
 
    ```sh
-   ./start.sh 192.168.1.10
+   ./hbl-start --spawn --guide
    ```
 
-   The preflight checker validates dependencies and the pairing key. The host
-   prints `Graphics listener ready` and a new session folder.
-3. Connect the Pico to the console with **neither GP0 nor GP1 grounded**.
-4. Leave Direct mode focused. The board loads NS2, runs it, issues `REMOVE`,
-   then types the connection command supplied by this host session. The expected
-   `Out of memory` response to `REMOVE` is part of the bootstrap sequence.
-5. Wait for the host to finish checks, upload graphics/audio and show HBLauncher.
-   A successful startup reports a continuous native frame loop. The display stays
-   black during graphics preparation, then HBLauncher fades in over 15 frames
-   (about a quarter of a second at 60 Hz).
+   `--guide` taps and types the RUNBOOK sequence through the Pico.  Without
+   `--guide`, follow the steps printed by the command (also in `RECOVERY.md`).
+5. Confirm the session reached **4/4 verified** (`--preflight` shows the stage,
+   the Pico status page shows the chain badge).
 
-**Never repeat `REMOVE` in the same SmileBASIC process.** After a failed attempt,
-close/restart SmileBASIC before retrying. Reuse the saved NS2 program, not an old
-session's connection command or addresses.
+## 3. Launch
 
-The host accepts inbound TCP **39380** (console) and **39381** (Pico). Allow them
-on your local network if a firewall blocks them. Guest-network/client isolation
-can block connections even when all devices have Wi-Fi. Do not forward these
-ports to the public internet. The internal authenticated RPC connection is on
-loopback only.
+```sh
+node host/probe.cjs <run-dir>         # mapping/ABI smoke test, no display
+./hbl-start --entries 1 --frames 60   # map the launcher, draw one second, stop
+./hbl-start                           # normal session
+```
 
-## 6. Use the launcher
+The probe is the first thing to run on a new firmware or after touching the
+loader: it maps a 3.6 KB image at `0x09000000`, publishes its cache lines, calls
+it, and checks the return value, a marker written into the context and the log
+ring.  If the probe succeeds but the launcher does not, the problem is in the
+Vulkan bring-up, not in mapping or the ABI.
 
-- D-pad **Up/Down** or the left stick selects an app; **A** opens it.
-- Touch an app row to launch it. Touch Refresh to rescan `apps/`.
-- Put either detached Joy-Con 2 into optical mouse position to move the cursor.
-  **L** clicks while the left Joy-Con tracks; **R** clicks while the right tracks.
-  Each mouse works with the other Joy-Con still attached.
-  These clicks work on app rows and Refresh. **ZR** is also a click.
-- The cursor hides when neither optical sensor reports active tracking.
-- Hello World returns to the launcher with **B** or **Minus**.
-- D-pad Left/Right do not enable any debug catalog or preview mode.
+What happens: the host creates/retains the vi layer, builds the Vulkan dispatch
+table from the session module, maps the launcher at `0x08000000` with its data
+at `0x0A000000`, publishes code (one patch per 64-byte line), and calls the
+entry.  The launcher creates the display, draws the wave screen, and returns to
+the host every 12 seconds or when you pick a title.
 
-Normal cursor movement stays on-console and does not wait for host polling.
-App switches and explicit SDK service requests stop at a controlled boundary.
-The launcher has no System/diagnostics menu.
+Controls: **D-pad / left stick** move, **A** open, **B** back, **+** about,
+**−** exit the launcher session, **touch** a row to select, tap again to open.
 
-## 7. Stop, update or repair
+## 4. Build your own app
 
-Press Ctrl+C in the host terminal. The worker exits at a cycle boundary and
-owned hardware services are closed. Restart SmileBASIC to release retained
-native allocations before a new session.
+```sh
+python3 sdk/tools/hbx-new.py apps/my-app "My App" "One line about it"
+# edit apps/my-app/src/app.c
+python3 sdk/tools/hbx-build.py apps/my-app
+./hbl-start --mock            # it appears in the catalog
+```
 
-To edit files on the Pico, unplug it, connect **GP0 to GND**, and reconnect it to
-the computer. CIRCUITPY returns in maintenance mode. Update settings or rerun the
-installer, unplug, remove the jumper, and reconnect normally. **BOOTSEL** is only
-needed when installing/replacing the UF2 firmware.
+Full SDK guide: [`SDK.md`](SDK.md).  Start from `apps/hello-cpu` for CPU logic,
+`apps/gpu-triangle` for GPU geometry, `sdk/examples/raw-vulkan` for an
+app-owned pipeline.
 
-| Symptom | Check |
+## 5. Reading the result
+
+| file | contents |
 | --- | --- |
-| No CIRCUITPY drive after installation | Use GP0-to-GND maintenance mode; check that the cable carries data |
-| Pico types into the wrong screen | Disconnect it; choose the correct editor/Direct mode before reconnecting |
-| Bootstrap punctuation is wrong | Set USB keyboard layout to English (US), then re-enter the source |
-| Host never sees the Pico | Check its Wi-Fi credentials, computer IP, pairing key and TCP 39381 |
-| Pico connects but console does not | Check TCP 39380 and console network isolation |
-| Missing module/font/tool message | Run `node scripts/doctor.cjs` and fix each `NEED` line |
-| App not listed | Check `app.json`, return to menu, then Refresh; inspect `catalog.rejected` in the private session report |
-| Mouse cursor is hidden | Detach a Joy-Con, place its optical side on a suitable surface, and move it; generic mouse support is separate |
-| Native session or version check fails | Restart SmileBASIC; verify exact supported versions; do not bypass qualification |
+| `build/hbl-session.log` | every stage, timing, status and the app log ring |
+| `$HBL_NS2JB/runs/<session>/` | exploit artifacts and `vi-layer.json` |
+| `/tmp/hbl-runner.log` | runner output when started by `--spawn` |
 
-See [the full README](../README.md) for package installation and troubleshooting,
-[the Pico reference](../smilebasic/pico-keyboard/README.md) for modes and protocol,
-and [the SDK guide](../sdk/README.md) to build your own apps.
+If an entry fails, the log names the stage (`instance`, `vi-surface`,
+`swapchain`, `ui-init`, ...) and the VkResult.  That is the first thing to put
+in a bug report.
+
+## 6. After a session
+
+The launcher is **resident** for the SmileBASIC session: code, data, display
+and shared blocks stay mapped so a later `hbl-start` reuses them instead of
+creating a second display.  Restart SmileBASIC to reclaim the memory and the vi
+layer.  See `RECOVERY.md` §7.
