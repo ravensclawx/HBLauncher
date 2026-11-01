@@ -4,17 +4,20 @@
 set -e
 cd "$(dirname "$0")"
 ROOT=$(cd .. && pwd)
-CC=${CC:-aarch64-linux-gnu-gcc}
-OBJCOPY=${OBJCOPY:-aarch64-linux-gnu-objcopy}
-NM=${NM:-aarch64-linux-gnu-nm}
-SIZE=${SIZE:-aarch64-linux-gnu-size}
+CROSS=$(sh "$ROOT/tools/cross.sh")
+CC=${CC:-${CROSS}gcc}
+OBJCOPY=${OBJCOPY:-${CROSS}objcopy}
+NM=${NM:-${CROSS}nm}
+SIZE=${SIZE:-${CROSS}size}
+export NM
+TARGET_CFLAGS=$(sh "$ROOT/tools/target-cflags.sh")
 OUT=${1:-build}
 mkdir -p "$OUT"
 CFLAGS="-std=gnu11 -O2 -ffreestanding -nostdlib -fno-builtin -fno-pic -fno-pie \
  -mcmodel=large -mbranch-protection=bti -march=armv8-a -fno-stack-protector \
  -fno-asynchronous-unwind-tables -fno-unwind-tables -fno-common \
  -ffunction-sections -fdata-sections -Wall -Wextra -Werror \
- -I$ROOT/sdk/include -I$ROOT/sdk/src -I$ROOT/launcher/src"
+ -I$ROOT/sdk/include -I$ROOT/sdk/src -I$ROOT/launcher/src $TARGET_CFLAGS"
 
 SOURCES="$ROOT/launcher/src/launcher_main.c $ROOT/launcher/src/launcher_ui.c \
  $ROOT/launcher/src/launcher_logic.c \
@@ -38,18 +41,18 @@ $CC $CFLAGS -no-pie -nostdlib -Wl,-T,"$ROOT/launcher/link.ld" -Wl,--gc-sections 
 $OBJCOPY -O binary -j .text -j .rodata "$OUT/launcher.elf" "$OUT/code.bin"
 $OBJCOPY -O binary -j .data "$OUT/launcher.elf" "$OUT/data.bin"
 
-code_bytes=$(stat -c%s "$OUT/code.bin")
-data_bytes=$(stat -c%s "$OUT/data.bin")
+code_bytes=$(wc -c < "$OUT/code.bin" | tr -d ' ')
+data_bytes=$(wc -c < "$OUT/data.bin" | tr -d ' ')
 echo "[launcher] code.bin $code_bytes bytes, data.bin $data_bytes bytes"
 $NM "$OUT/launcher.elf" | grep -E ' _start$| hbx_app_main$| hbx_launcher_draw$| hbx_ui_init$| launcher_display_create$' || true
 $SIZE "$OUT/launcher.elf"
 
 python3 - "$OUT" <<'PY'
-import json, sys, subprocess, hashlib, pathlib
+import json, os, sys, subprocess, hashlib, pathlib
 out = pathlib.Path(sys.argv[1])
 elf = out / "launcher.elf"
 symbols = {}
-for line in subprocess.run(["aarch64-linux-gnu-nm", str(elf)], capture_output=True, text=True).stdout.splitlines():
+for line in subprocess.run([os.environ.get("NM", "aarch64-linux-gnu-nm"), str(elf)], capture_output=True, text=True).stdout.splitlines():
     parts = line.split()
     if len(parts) == 3:
         symbols[parts[2]] = int(parts[0], 16)

@@ -38,6 +38,10 @@ CFLAGS = [
     "-fno-unwind-tables", "-fno-common", "-ffunction-sections", "-fdata-sections",
     "-Wall", "-Wextra", "-Werror",
 ]
+# Host-specific additions, e.g. where <vulkan/vulkan.h> lives for devkitA64 (tools/target-cflags.sh).
+_target = subprocess.run(["sh", str(ROOT / "tools/target-cflags.sh")], capture_output=True, text=True)
+if _target.returncode == 0:
+    CFLAGS += _target.stdout.split()
 SUFFIXES = {".c", ".S", ".s"}
 
 
@@ -70,11 +74,15 @@ def fail(message, code=1):
 
 
 def tool(name):
-    for prefix in ("aarch64-linux-gnu-", ""):
+    # Same lookup as tools/cross.sh: HBL_CROSS, then Debian, devkitA64, Homebrew prefixes.
+    devkit = os.path.join(os.environ.get("DEVKITPRO", "/opt/devkitpro"), "devkitA64/bin/aarch64-none-elf-")
+    prefixes = [os.environ["HBL_CROSS"]] if os.environ.get("HBL_CROSS") else \
+        ["aarch64-linux-gnu-", "aarch64-none-elf-", "aarch64-elf-", devkit]
+    for prefix in prefixes:
         candidate = shutil.which(prefix + name)
         if candidate:
             return candidate
-    fail(f"missing toolchain program: {name} (install gcc-aarch64-linux-gnu)")
+    fail(f"missing toolchain program: {name} (install gcc-aarch64-linux-gnu or devkitA64, or set HBL_CROSS)")
     return None
 
 
