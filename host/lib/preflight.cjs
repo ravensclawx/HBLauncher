@@ -36,11 +36,19 @@ async function run(options = {}) {
 
   /* Toolchain */
   add('node', true, true, process.version, 'install Node 18+');
-  for (const tool of ['aarch64-linux-gnu-gcc', 'aarch64-linux-gnu-objcopy', 'aarch64-linux-gnu-nm']) {
-    let ok = true;
-    try { execFileSync('sh', ['-c', `command -v ${tool}`], {stdio: 'ignore'}); }
-    catch { ok = false; }
-    add(tool, ok, true, ok ? 'found' : 'missing', 'apt install gcc-aarch64-linux-gnu');
+  /* Same toolchain lookup as the build (tools/cross.sh): Debian, devkitA64 or Homebrew prefixes. */
+  let cross = '';
+  try { cross = execFileSync('sh', [path.join(ROOT, 'tools/cross.sh')], {encoding: 'utf8', stdio: 'pipe'}).trim(); }
+  catch { cross = ''; }
+  for (const name of ['gcc', 'objcopy', 'nm']) {
+    let ok = !!cross;
+    if (ok) {
+      try { execFileSync('sh', ['-c', `command -v "${cross}${name}"`], {stdio: 'ignore'}); }
+      catch { ok = false; }
+    }
+    add(`aarch64 ${name}`, ok, true, ok ? cross + name : 'missing',
+      process.platform === 'darwin' ? 'install devkitPro devkitA64, or set HBL_CROSS'
+                                    : 'apt install gcc-aarch64-linux-gnu');
   }
 
   /* Built artifacts */
@@ -100,23 +108,40 @@ async function run(options = {}) {
   {
     let detail = 'no 10.42.0.x interface';
     let ok = false;
-    try {
-      const addresses = execFileSync('sh', ['-c',
-        "ip -o -4 addr show 2>/dev/null | awk '{print $2, $4}'"], {encoding: 'utf8'});
-      const line = addresses.split('\n').find(entry => entry.includes('10.42.0.'));
-      if (line) {
-        const device = line.trim().split(/\s+/)[0].replace(/:$/, '');
+    if (process.platform === 'darwin') {
+      /* macOS: no iproute2; read the addresses Node sees and the link state from ifconfig. */
+      for (const [device, list] of Object.entries(require('node:os').networkInterfaces())) {
+        const entry = (list || []).find(a => a.family === 'IPv4' && a.address.startsWith('10.42.0.'));
+        if (!entry) continue;
         let state = 'unknown';
         try {
-          state = execFileSync('sh', ['-c', `ip -o link show ${device} | awk '{print $9}'`],
-            {encoding: 'utf8'}).trim();
+          state = /status: active/.test(execFileSync('ifconfig', [device], {encoding: 'utf8'})) ? 'UP' : 'DOWN';
         } catch { state = 'unknown'; }
         ok = state === 'UP';
-        detail = `${device} ${line.trim().split(/\s+/)[1]} state ${state}`;
+        detail = `${device} ${entry.cidr} state ${state}`;
+        break;
       }
-    } catch { /* iproute2 missing */ }
-    add('console link address', ok, false, detail,
-      'connect the wired adapter and run: sudo ip addr add 10.42.0.1/24 dev <iface>');
+      add('console link address', ok, false, detail,
+        'connect the wired adapter and run: sudo ifconfig <iface> inet 10.42.0.1 netmask 255.255.255.0 alias');
+    } else {
+      try {
+        const addresses = execFileSync('sh', ['-c',
+          "ip -o -4 addr show 2>/dev/null | awk '{print $2, $4}'"], {encoding: 'utf8'});
+        const line = addresses.split('\n').find(entry => entry.includes('10.42.0.'));
+        if (line) {
+          const device = line.trim().split(/\s+/)[0].replace(/:$/, '');
+          let state = 'unknown';
+          try {
+            state = execFileSync('sh', ['-c', `ip -o link show ${device} | awk '{print $9}'`],
+              {encoding: 'utf8'}).trim();
+          } catch { state = 'unknown'; }
+          ok = state === 'UP';
+          detail = `${device} ${line.trim().split(/\s+/)[1]} state ${state}`;
+        }
+      } catch { /* iproute2 missing */ }
+      add('console link address', ok, false, detail,
+        'connect the wired adapter and run: sudo ip addr add 10.42.0.1/24 dev <iface>');
+    }
   }
 
   /* Pico web status page shows the chain stage. */
@@ -168,9 +193,19 @@ async function run(options = {}) {
       'power the Pico and join the Wi-Fi network');
   }
 
-  add('capture device', fs.existsSync('/dev/video2'), false,
-    fs.existsSync('/dev/video2') ? '/dev/video2' : 'missing',
-    'attach the Elgato capture device');
+  if (process.platform === 'darwin') {
+    /* macOS exposes capture cards as cameras, not /dev/video* nodes. */
+    let name = '';
+    try {
+      const cams = execFileSync('system_profiler', ['SPCameraDataType'], {encoding: 'utf8', stdio: 'pipe'});
+      name = (cams.match(/^\s{4}(.*(?:Elgato|Cam Link|HD60|Capture|USB Video).*):$/mi) || [])[1] || '';
+    } catch { name = ''; }
+    add('capture device', !!name, false, name || 'missing', 'attach the capture device (shows up as a camera)');
+  } else {
+    add('capture device', fs.existsSync('/dev/video2'), false,
+      fs.existsSync('/dev/video2') ? '/dev/video2' : 'missing',
+      'attach the Elgato capture device');
+  }
 
   return checks;
 }
