@@ -40,6 +40,10 @@ $OBJCOPY -O binary -j .data "$OUT/launcher.elf" "$OUT/data.bin"
 
 code_bytes=$(stat -c%s "$OUT/code.bin")
 data_bytes=$(stat -c%s "$OUT/data.bin")
+if [ "$data_bytes" -ne 0 ]; then
+  echo "[launcher] data.bin must be empty: the console payload only maps RX pages" >&2
+  exit 1
+fi
 echo "[launcher] code.bin $code_bytes bytes, data.bin $data_bytes bytes"
 $NM "$OUT/launcher.elf" | grep -E ' _start$| hbx_app_main$| hbx_launcher_draw$| hbx_ui_init$| launcher_display_create$' || true
 $SIZE "$OUT/launcher.elf"

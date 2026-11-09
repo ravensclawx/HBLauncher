@@ -1,8 +1,10 @@
 /* Launcher link layout.
- *   code: 0x08000000 (RX, bulk-mapped from code.bin)
- *   data: 0x0A000000 (RW, zero-filled by the loader, then data.bin copied in)
- * The data region is mapped once and kept alive across launcher entries and
- * app launches, so .bss here holds long-lived launcher/renderer state.
+ *   code: 0x08000000 (RX, mapped page by page from code.bin)
+ *   data: 0x0A000000 (link-time anchor only - nothing is placed there)
+ * The console payload can only map pages RX, so the image carries no
+ * .data/.bss: persistent state lives in the host-allocated RW persist block
+ * passed via ctx->data_base (struct launcher_persist).  The .data/.bss
+ * sections below stay empty; the build fails if anything writable appears.
  */
 ENTRY(_start)
 SECTIONS

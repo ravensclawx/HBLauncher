@@ -27,6 +27,13 @@ const ABI = readJson(path.join(ROOT, 'sdk/abi.json'));
 
 const LAUNCHER_CODE_BASE = 0x08000000;
 const LAUNCHER_DATA_BASE = 0x0A000000;
+/* Writable launcher state lives in an SDK-allocated Normal/RW block of this
+   size (struct launcher_persist; the image asserts it fits).  The payload's
+   only map command finalises pages RX, so no image carries .data/.bss. */
+const LAUNCHER_PERSIST_BYTES = 8 * 1024;
+/* "HBLP" + ABI version, written by the launcher into its persist block so a
+   later hbl-start can recognise the block it recorded. */
+const LAUNCHER_PERSIST_MAGIC = 0x504c4248;
 
 const FLAG_RESUME = 0x1;
 const FLAG_NO_AV = 0x4;
@@ -159,6 +166,11 @@ class Runtime {
     return record;
   }
 
+  /* ns2jb (kurumuz fork, commit 81d5bb1) publishes only a single-page map
+   * (0x524f0012): an image is staged in a Normal/RW source block and mapped
+   * page by page to its link-time base; the payload finalises each destination
+   * page RX.  Teardown releases the pages one by one with CMD_UNMAP_PAGE
+   * (0x524f0013). */
   async mapImage(label, entry) {
     await this.target.mapImage(entry);
     this.mappedImages.push({label, ...entry});
@@ -196,7 +208,11 @@ class Runtime {
     const code = fs.readFileSync(path.join(buildDir, 'code.bin'));
     const data = fs.readFileSync(path.join(buildDir, 'data.bin'));
     check(report.codeSha256 === sha256(code), 'launcher code.bin does not match report.json');
-    const dataBytes = Math.max(0, Number(BigInt(report.bssEnd) - BigInt(report.dataBase)));
+    check(data.length === 0, 'launcher data.bin must be empty; the payload can ' +
+      'only map RX pages, so writable state belongs in the persist block');
+    check(Number(BigInt(report.bssEnd)) === Number(BigInt(report.bssStart)),
+      'launcher image has .bss; the payload can only map RX pages, so writable ' +
+      'state must live in the persist block (ctx->data_base)');
 
     /* A previous hbl-start in the same SmileBASIC session leaves the launcher
        resident (the display is retained by design).  Detect it by its entry
@@ -205,25 +221,20 @@ class Runtime {
     const resident = await this.target.query(LAUNCHER_CODE_BASE);
     if (Number(resident.type) !== 0) {
       let same = false;
-      let dataPresent = false;
       try {
         const mapped = await this.target.read(LAUNCHER_CODE_BASE, code.length);
         same = sha256(mapped) === report.codeSha256;
-        const dataRegion = await this.target.query(LAUNCHER_DATA_BASE);
-        dataPresent = Number(dataRegion.type) !== 0;
       } catch { same = false; }
-      if (same && !dataPresent) {
-        throw new HostError(
-          'a previous launcher image is resident without its data page; ' +
-          'restart SmileBASIC and re-acquire 4/4', 'resident-broken');
-      }
       if (same) {
+        const persist = await this.reuseLauncherPersist();
         this.launcher = {
-          report, code, data, codeSource: 0, dataSource: 0, dataBytes,
-          flush: {calls: 0}, entry: Number(BigInt(report.entry)),
+          report, code, data, codeSource: 0, persist: persist.base,
+          persistBytes: LAUNCHER_PERSIST_BYTES, flush: {calls: 0},
+          entry: Number(BigInt(report.entry)),
           codeBase: LAUNCHER_CODE_BASE, dataBase: LAUNCHER_DATA_BASE, resident: true
         };
-        this.log.info('reusing the resident launcher image', {entry: hex(this.launcher.entry)});
+        this.log.info('reusing the resident launcher image',
+          {entry: hex(this.launcher.entry), persist: hex(persist.base)});
         return;
       }
       throw new HostError(
@@ -237,24 +248,72 @@ class Runtime {
       bytes: code.length, permission: 5});
     const flush = await this.target.flushCode(LAUNCHER_CODE_BASE, code);
 
-    const dataSource = await this.alloc('launcher-data-source', dataBytes || PAGE);
-    {
-      const region = Buffer.alloc(dataBytes || PAGE);
-      if (data.length) data.copy(region, 0, 0, Math.min(data.length, region.length));
-      await this.target.write(dataSource, region);
-    }
-    await this.mapImage('launcher-data', {source: dataSource, destination: LAUNCHER_DATA_BASE,
-      bytes: dataBytes || PAGE, permission: 3});
+    /* Writable launcher state: an SDK-allocated Normal/RW block, written
+       directly (never mapped - the payload finalises mapped pages RX).  The
+       image reaches it through ctx->data_base and keeps its display, renderer
+       and UI state there across entries and app launches. */
+    const persist = await this.target.placeData({bytes: LAUNCHER_PERSIST_BYTES});
+    this.blocks.push({label: 'launcher-persist', base: persist,
+      bytes: LAUNCHER_PERSIST_BYTES});
 
     this.launcher = {
-      report, code, data, codeSource, dataSource, dataBytes, flush,
-      entry: Number(BigInt(report.entry)), codeBase: LAUNCHER_CODE_BASE,
+      report, code, data, codeSource, persist, persistBytes: LAUNCHER_PERSIST_BYTES,
+      flush, entry: Number(BigInt(report.entry)), codeBase: LAUNCHER_CODE_BASE,
       dataBase: LAUNCHER_DATA_BASE
     };
+    this.saveLauncherPersist(persist);
     this.log.info('launcher mapped', {
       entry: hex(this.launcher.entry), pages: Math.ceil(code.length / PAGE),
-      dataBytes, cacheLines: flush.calls, milliseconds: Date.now() - started
+      persist: hex(persist), persistBytes: LAUNCHER_PERSIST_BYTES,
+      cacheLines: flush.calls, milliseconds: Date.now() - started
     });
+  }
+
+  /* The persist block is an ordinary SDK allocation, so a later hbl-start in
+     the same SmileBASIC session can only find it through the run directory.
+     The code image is resident (still RX-mapped and verifiable); the block is
+     validated by query + the launcher's signature before reuse. */
+  saveLauncherPersist(base) {
+    if (!this.runDir || this.target.kind !== 'live') return;
+    const file = path.join(this.runDir, 'launcher-state.json');
+    try {
+      fs.writeFileSync(file, JSON.stringify({
+        session: this.target.session, persistBase: base,
+        persistBytes: LAUNCHER_PERSIST_BYTES,
+        codeSha256: this.launcher.report.codeSha256,
+        savedAt: new Date().toISOString()
+      }, null, 2) + '\n');
+    } catch (error) {
+      this.log.warn('launcher persist block not recorded: ' + error.message);
+    }
+  }
+
+  async reuseLauncherPersist() {
+    const broken = message => new HostError(message, 'resident-broken');
+    if (!this.runDir || this.target.kind !== 'live')
+      throw broken('a resident launcher needs its recorded persist block; ' +
+        'restart SmileBASIC and re-acquire 4/4');
+    const file = path.join(this.runDir, 'launcher-state.json');
+    let record = null;
+    try { record = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { record = null; }
+    if (!record || String(record.session) !== String(this.target.session) ||
+        !Number.isSafeInteger(record.persistBase) || record.persistBase <= 0 ||
+        Number(record.persistBytes) < LAUNCHER_PERSIST_BYTES)
+      throw broken('the resident launcher\'s persist block is not recorded for ' +
+        'this session; restart SmileBASIC and re-acquire 4/4');
+    const info = await this.target.query(record.persistBase);
+    if (Number(info.type) !== 5 || Number(info.permissions) !== 3)
+      throw broken('the recorded persist block is not a Normal/RW allocation; ' +
+        'restart SmileBASIC and re-acquire 4/4');
+    /* The launcher writes its signature (HBLP + ABI) into the last 8 bytes
+       of the block; see the first-entry path in launcher_main.c. */
+    const head = await this.target.read(record.persistBase +
+      LAUNCHER_PERSIST_BYTES - 8, 8);
+    if (head.readUInt32LE(0) !== LAUNCHER_PERSIST_MAGIC ||
+        head.readUInt32LE(4) !== ABI.abiVersion)
+      throw broken('the persist block does not carry the launcher signature; ' +
+        'restart SmileBASIC and re-acquire 4/4');
+    return {base: record.persistBase, bytes: Number(record.persistBytes)};
   }
 
   async allocateShared() {
@@ -427,7 +486,8 @@ class Runtime {
       .u64('status', 0).u64('exit', 0).u64('frame', 0)
       .u64('now_ns', this.elapsedNs()).u64('tick_hz', this.tickHz || 0).u64('uptime_ns', this.elapsedNs())
       .u64('heap_base', this.heap).u64('heap_size', 8 * 1024 * 1024)
-      .u64('data_base', 0).u64('data_size', 0)
+      .u64('data_base', this.launcher.persist)
+      .u64('data_size', this.launcher.persistBytes)
       .u64('code_base', this.launcher.codeBase)
       .u64('code_size', this.launcher.code.length)
       .u64('stack_base', this.stack).u64('stack_size', 1024 * 1024)
@@ -634,6 +694,9 @@ class Runtime {
     const block = Buffer.alloc(total);
     block.writeUInt32LE(0x54415341, 0); /* ASAT */
     block.writeUInt32LE(pkg.assets.length, 4);
+    /* reserved[0]: the table's own region bytes, so hbx_asset can bounds-check
+       the name/data offsets against the block it actually lives in. */
+    block.writeUInt32LE(total, 8);
     /* Names and data interleave (name, data, name, data...); use the offsets
        laid out above.  Packing the names separately put the second name on
        top of the first asset's data. */
@@ -699,51 +762,40 @@ class Runtime {
   async launchNative(pkg, options = {}) {
     const report = pkg.report;
     const codeBase = Number(BigInt(report.codeBase));
-    const dataBase = Number(BigInt(report.dataBase));
     const code = pkg.code;
     const data = pkg.data;
-    const dataBytes = Math.max(PAGE, Number(report.dataRegionBytes || 0));
+    const persistBytes = Math.max(0, Number(pkg.limits.persist_bytes || 0));
 
-    /* Refuse to collide with the resident launcher or with itself. */
+    /* Refuse to collide with the resident launcher code.  Writable state is
+       no longer placed at a link-time base: the payload can only map RX
+       pages, so it lives in an SDK-allocated RW block instead. */
     const overlaps = (a, sizeA, b, sizeB) => a < b + sizeB && b < a + sizeA;
     const launcherCode = 0x100000;
-    const launcherData = 0x100000;
-    check(codeBase % PAGE === 0 && dataBase % PAGE === 0,
-      `app ${pkg.manifest.id} bases must be page aligned`);
-    for (const [label, base, size] of [['code', codeBase, pageUp(code.length)],
-                                       ['data', dataBase, dataBytes]]) {
-      check(!overlaps(base, size, LAUNCHER_CODE_BASE, launcherCode),
-        `app ${pkg.manifest.id} ${label} overlaps the resident launcher code`);
-      check(!overlaps(base, size, LAUNCHER_DATA_BASE, launcherData),
-        `app ${pkg.manifest.id} ${label} overlaps the resident launcher data`);
-    }
-    check(!overlaps(codeBase, pageUp(code.length), dataBase, dataBytes),
-      `app ${pkg.manifest.id} code and data regions overlap`);
+    check(codeBase % PAGE === 0, `app ${pkg.manifest.id} code base must be page aligned`);
+    check(!overlaps(codeBase, pageUp(code.length), LAUNCHER_CODE_BASE, launcherCode),
+      `app ${pkg.manifest.id} code overlaps the resident launcher code`);
 
     const started = Date.now();
-    let codeSource = 0, dataSource = 0, heap = 0, stack = 0, assetsBlock = 0, saveBlock = 0;
+    let codeSource = 0, persistBlock = 0, heap = 0, stack = 0, assetsBlock = 0, saveBlock = 0;
     let importBlock = 0;
     let exclusive = false;
     let appStatus = 0;
     try {
-      check(data.length <= dataBytes, `${pkg.manifest.id}: data.bin does not fit its region`);
-      /* One slack page: the bulk unmap rejects exactly page-sized sources. */
-      codeSource = await this.alloc(`${pkg.manifest.id}-code-source`, code.length + PAGE);
+      check(data.length <= persistBytes,
+        `${pkg.manifest.id}: data.bin does not fit its persist block`);
+      codeSource = await this.alloc(`${pkg.manifest.id}-code-source`, code.length);
       await this.target.write(codeSource, code);
       await this.mapImage(pkg.manifest.id + '-code', {source: codeSource,
         destination: codeBase, bytes: code.length, permission: 5});
       await this.target.flushCode(codeBase, code);
 
-      dataSource = await this.alloc(`${pkg.manifest.id}-data-source`, dataBytes + PAGE);
-      /* The image expects a zero-filled data region (crt0 does not zero .bss);
-         session allocations are not guaranteed to be zero. */
-      {
-        const region = Buffer.alloc(dataBytes);
-        if (data.length) data.copy(region, 0, 0, Math.min(data.length, dataBytes));
-        await this.target.write(dataSource, region);
-      }
-      await this.mapImage(pkg.manifest.id + '-data', {source: dataSource,
-        destination: dataBase, bytes: dataBytes, permission: 3});
+      /* Writable app state: an SDK-allocated Normal/RW block written directly
+         (never mapped; the payload's map command finalises pages RX).  The
+         image reaches it through ctx->data_base.  SDK allocations are not
+         guaranteed zero, so the whole block is written first. */
+      persistBlock = persistBytes > 0
+        ? await this.target.placeData({bytes: persistBytes, content: data})
+        : 0;
 
       const heapBytes = pkg.limits.heap_bytes;
       const stackBytes = pkg.limits.stack_bytes;
@@ -764,7 +816,8 @@ class Runtime {
         .u64('status', 0).u64('exit', 0).u64('frame', 0)
         .u64('now_ns', this.elapsedNs()).u64('tick_hz', this.tickHz || 0).u64('uptime_ns', this.elapsedNs())
         .u64('heap_base', heap).u64('heap_size', heapBytes)
-        .u64('data_base', assetsBlock).u64('data_size', assets.length)
+        .u64('data_base', persistBlock || 0)
+        .u64('data_size', persistBlock ? persistBytes : 0)
         .u64('code_base', codeBase).u64('code_size', code.length)
         .u64('stack_base', stack).u64('stack_size', stackBytes)
         .u64('control', this.control)
@@ -831,8 +884,8 @@ class Runtime {
         try { await this.storeSave(pkg, saveBlock); }
         catch (error) { this.log.warn('save block not stored: ' + error.message); }
       }
-      await this.release({labels: [pkg.manifest.id + '-code', pkg.manifest.id + '-data'],
-        codeSource, dataSource, heap, stack, assetsBlock, saveBlock, importBlock});
+      await this.release({labels: [pkg.manifest.id + '-code'],
+        codeSource, persistBlock, heap, stack, assetsBlock, saveBlock, importBlock});
     }
     return appStatus;
   }
@@ -1050,10 +1103,10 @@ class Runtime {
     } catch { /* best effort */ }
   }
 
-  async release({labels, codeSource, dataSource, heap, stack, assetsBlock, saveBlock, importBlock}) {
-    /* Unmap the app images first, then free the source blocks they came from. */
+  async release({labels, codeSource, persistBlock, heap, stack, assetsBlock, saveBlock, importBlock}) {
+    /* Unmap the app images first, then free the blocks they came from. */
     const stuck = labels ? await this.releaseImages(labels) : new Set();
-    for (const block of [codeSource, dataSource, heap, stack, assetsBlock, saveBlock, importBlock]) {
+    for (const block of [codeSource, persistBlock, heap, stack, assetsBlock, saveBlock, importBlock]) {
       if (!block || stuck.has(block)) continue;
       try { await this.target.free(block); }
       catch (error) { this.log.warn('free failed: ' + error.message); }
@@ -1087,7 +1140,11 @@ class Runtime {
       await this.target.close();
       return;
     }
-    await this.releaseImages(['launcher-code', 'launcher-data']);
+    await this.releaseImages(['launcher-code']);
+    if (this.runDir) {
+      try { fs.rmSync(path.join(this.runDir, 'launcher-state.json'), {force: true}); }
+      catch { /* best effort */ }
+    }
     for (const block of [...this.blocks].reverse()) {
       try { await this.target.free(block.base); } catch { /* ignored */ }
     }

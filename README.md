@@ -7,6 +7,23 @@ A native AArch64 homebrew launcher and app SDK for Nintendo Switch 2, by
 with an externally established, verified 4/4 session. CPU code handles the UI
 layout, animation, and input; Vulkan draws the interface.
 
+> **ns2jb target (this fork).** This fork runs against the ns2jb exploit
+> (kurumuz fork, commit `81d5bb1`) on Switch 2 firmware 23.0.1 and does
+> **not** require a Raspberry Pi Pico. The SmileBASIC bootstrap (`TXT:NS2`)
+> can be typed by any USB HID keyboard — for example a rooted Android phone
+> acting as a configfs USB HID gadget — and HBLauncher must run in the same
+> network namespace as the ns2jb runner (the RPC bridge binds `127.0.0.1`).
+>
+> The ns2jb payload accepts RPC command IDs `0x524f0010`–`0x524f0016` only,
+> so launcher and app images are staged in allocated RW source blocks and
+> mapped one page at a time with the map-page command (`0x524f0012`, which
+> finalises each destination page RX) and released one page at a time with
+> the unmap-page command (`0x524f0013`). The bulk range map/unmap commands
+> used by earlier builds (`0x524f001a`–`0x524f001c`) are not available and
+> are not used. Because the map command is RX-only, images carry no
+> `.data`/`.bss`: writable state lives in loader-allocated RW persist blocks
+> passed through `ctx->data_base`.
+
 ## Features
 
 - App catalog with controller navigation, animated transitions, and return to launcher.
@@ -68,8 +85,10 @@ uses a different path.
 
 ## Console setup
 
-Provide a separate `ns2jb-kurumuz` checkout and establish the required session.
-The launcher requires verified 4/4 before mapping native code.
+Provide a separate `ns2jb-kurumuz` checkout (kurumuz fork, commit `81d5bb1`)
+and establish the required session. The launcher requires verified 4/4 before
+mapping native code. No Raspberry Pi Pico is needed; the bootstrap (`TXT:NS2`)
+only has to be typed into SmileBASIC once — any USB HID keyboard works.
 
 ```sh
 export HBL_NS2JB=/path/to/ns2jb-kurumuz
@@ -87,7 +106,7 @@ external controller tooling described there.
 | `HBL_NS2JB` | External session runner checkout |
 | `HBL_APPS` | Alternate app package directory |
 | `HBL_RPC_TARGET` | Console RPC address |
-| `HBL_PICO_TOOL` | External controller tool for guided setup |
+| `HBL_PICO_TOOL` | Optional external controller tool for `--guide` (not required) |
 | `HBL_COMPAT_ROOT` | Optional external legacy compatibility projects |
 
 ## Develop an app

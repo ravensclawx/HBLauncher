@@ -10,11 +10,10 @@
 #include "hbx_ui.h"
 #include "hbx_math.h"
 
-static struct hbx_heap heap;
-static uint32_t frames;
-
 int hbx_app_main(const struct hbx_ctx *ctx) {
     struct hbx_input_state input;
+    struct hbx_heap heap;
+    uint32_t frames = 0;
     float phase = 0.0f;
     int32_t *numbers;
 

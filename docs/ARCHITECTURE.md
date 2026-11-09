@@ -30,32 +30,33 @@ app launches and returns look continuous.
 
 | range | size | contents | permissions |
 | --- | --- | --- | --- |
-| `0x08000000` | 47 KB (12 pages) | launcher code + rodata | RX |
-| `0x09000000` | per app | app code + rodata | RX |
-| `0x0A000000` | 35 KB | launcher `.data`/`.bss` (persistent state) | RW |
-| `0x0B000000` | per app | app `.data`/`.bss` | RW |
-| host blocks | — | ctx, control, log, heap, stack, dispatch, catalog, icons, atlas, assets | RW |
+| `0x08000000` | 47 KB (14 pages) | launcher code + rodata | RX |
+| `0x09000000+` | per app | app code + rodata | RX |
+| host blocks | — | ctx, control, log, heap, stack, dispatch, catalog, icons, atlas, assets, persist | RW |
 
 Host blocks are allocated with the session SDK allocator and are only visible
-to the images through absolute pointers in `struct hbx_ctx`.  Code images are
-mapped with the bulk range primitives:
+to the images through absolute pointers in `struct hbx_ctx`.  The ns2jb
+payload accepts command IDs `0x524f0010`–`0x524f0016` only, so images are
+placed with the single-page primitives:
 
 ```
-0x524f001a  map N pages RX from one Normal RW block
-0x524f001b  map N pages RW
-0x524f001c  unmap N pages
+0x524f0012  map one page RX from a page-aligned Normal/RW source into a free page
+0x524f0013  unmap one page
 0x524f0014  write 16 bytes with cache publish + readback
 ```
 
-The range command finalises permissions for the whole range but does not
-publish new instructions, so the loader follows every code mapping with one
-patch per **64-byte cache line** (16 bytes rewritten in place, `dc cvau` /
-`ic ivau` inside the payload).  A 47 KB launcher needs 761 publishes; an app
-image needs 70–100.  That keeps a full launcher map in the low seconds.
+`0x524f0012` finalises the destination **RX** (`process_permission 5` is
+hardcoded inside the command), so there is deliberately no RW mapping path:
+images carry no `.data`/`.bss`, and writable state lives in a
+loader-allocated Normal/RW **persist block** (8 KB for the launcher,
+`limits.persist_bytes` per app, default one page) handed to the image through
+`ctx->data_base`/`ctx->data_size`.  The block is zero-filled once and stays
+allocated while the image stays loaded, so state survives re-entries and app
+launches.  A later `hbl-start` in the same SmileBASIC session recovers the
+resident launcher's block from `launcher-state.json` in the run directory.
 
-The loader allocates its own Normal RW blocks with the session allocator and
-feeds them to the range commands directly; it does not need the process-test
-scratch pages used by the earlier single-page bring-up paths.
+The map's own permission change publishes new code lines; `HBL_PUBLISH=1`
+forces the per-64-byte patch path when rewriting code in place.
 
 The launcher's code + data stay mapped for the whole session.  App images are
 unmapped and their source blocks freed after the app returns.
@@ -144,7 +145,7 @@ launcher entry ──► user presses A ──► loading panel presented
       │                                   │
       │ control->launch = index + 1       │
       ▼                                   ▼
-host reads control, maps package: code RX, data RW, heap, stack, assets
+host reads control, places package: code RX-mapped, persist RW block, heap, stack, assets
       │
       ├─ native: call entry with ctx; app runs until B/exit or frame limit
       └─ compat: run the proven external loader for a finite session

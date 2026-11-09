@@ -1,10 +1,11 @@
 /*
  * crt0.S - freestanding entry for every HBLauncher Native image.
  *
- * x0 = struct hbx_ctx* at entry.  The host maps the data region zero-filled and
- * never remaps it while the image stays loaded, so .bss is zero on the first
- * entry and preserved across re-entries (the launcher relies on that to keep
- * its renderer and UI state alive between app launches).
+ * x0 = struct hbx_ctx* at entry.  The host allocates the image's persist
+ * block (ctx->data_base) zero-filled and keeps it allocated while the image
+ * stays loaded, so persistent state survives re-entries (the launcher keeps
+ * its renderer and UI state there between app launches).  Images carry no
+ * .data/.bss: the console payload can only map pages RX.
  *
  * The host calls this like a normal function, so the AAPCS64 obligations are
  * honoured: the caller's frame pointer and link register are saved on the

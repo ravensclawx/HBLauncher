@@ -7,8 +7,8 @@
  *
  * Prints a JSON report and exits non-zero unless the probe returned 0x5A and
  * wrote its magic marker.  This is the first thing to run on hardware: it
- * exercises the live loader (bulk RX map + cache publish), the context ABI and
- * the entry trampoline without any Vulkan involvement.
+ * exercises the live loader (per-page RX map + cache publish), the context ABI
+ * and the entry trampoline without any Vulkan involvement.
  */
 const fs = require('node:fs');
 const path = require('node:path');
@@ -17,7 +17,6 @@ const {LiveTarget, MockTarget} = require('./lib/target.cjs');
 const {Ctx, ABI} = require('./lib/runtime.cjs');
 
 const ROOT = path.resolve(__dirname, '..');
-const CODE_BASE = 0x09000000;
 const MAGIC = 0x5A5A1234;
 
 /* A scripted stand-in for the probe image, so the host path can be tested
@@ -35,7 +34,7 @@ function mockHandler() {
     magic.writeBigUInt64LE(BigInt(MAGIC));
     await target.write(ctx + ABI.ctx.frame, magic);
     const reached = Buffer.alloc(8);
-    reached.writeBigUInt64LE(5n);
+    reached.writeBigUInt64LE(6n);
     await target.write(ctx + ABI.ctx.args + 16, reached);
     return {result: 0x5a};
   };
@@ -48,7 +47,7 @@ async function main() {
     return 0;
   }
   const stepIndex = args.indexOf('--step');
-  const step = stepIndex >= 0 ? Number(args[stepIndex + 1]) : 5;
+  const step = stepIndex >= 0 ? Number(args[stepIndex + 1]) : 6;
   const mock = args.includes('--mock');
   const runDir = args[0] && !args[0].startsWith('-') ? path.resolve(args[0]) : null;
   const keep = args.includes('--keep');
@@ -57,7 +56,12 @@ async function main() {
   const target = mock ? new MockTarget({log, onCall: mockHandler()})
                       : await LiveTarget.open({runDir, log});
   const {report, code} = readReport();
+  /* The probe links at whatever base its build chose (report.codeBase); the
+     old hardcoded 0x09000000 disagreed with the linked image and would have
+     called an unmapped entry on hardware. */
+  const CODE_BASE = Number(BigInt(report.codeBase));
   let codeSource = 0, ctxBlock = 0, heap = 0, stack = 0, logRing = 0, logStruct = 0;
+  let persist = 0;
   try {
     codeSource = await target.allocate(Math.ceil(code.length / 0x1000) * 0x1000);
     await target.write(codeSource, code);
@@ -67,6 +71,10 @@ async function main() {
     log.info('probe mapped', {pages: Math.ceil(code.length / 0x1000),
       publishes: flush.calls});
 
+    /* The image's writable state: an SDK-allocated Normal/RW block, written
+       directly (the payload's only map command finalises pages RX).  The
+       probe verifies the block is writable at step 6. */
+    persist = await target.placeData({bytes: 0x1000});
     heap = await target.allocate(0x40000);
     stack = await target.allocate(0x40000);
     ctxBlock = await target.allocate(0x1000);
@@ -82,6 +90,7 @@ async function main() {
     const ctx = Ctx.header()
       .u64('now_ns', 0n).u64('tick_hz', 19200000).u64('uptime_ns', 0n)
       .u64('heap_base', heap).u64('heap_size', 0x40000)
+      .u64('data_base', persist).u64('data_size', 0x1000)
       .u64('code_base', CODE_BASE).u64('code_size', code.length)
       /* Step 0 stays on the caller's stack to isolate the entry trampoline. */
       .u64('stack_base', step >= 1 ? stack : 0)
@@ -97,7 +106,7 @@ async function main() {
     const marker = Number((await target.read(ctxBlock + ABI.ctx.frame, 8)).readBigUInt64LE());
     const reached = Number((await target.read(ctxBlock + ABI.ctx.args + 16, 8)).readBigUInt64LE());
     const text = (await target.read(logRing, 0x4000)).toString('utf8').replace(/\0+$/, '');
-    const ok = reply.result === 0x5a && marker === MAGIC && reached >= Math.min(step, 5);
+    const ok = reply.result === 0x5a && marker === MAGIC && reached >= Math.min(step, 6);
     console.log(JSON.stringify({
       ok, step, reached, result: reply.result, status, marker: hex(marker), log: text.trim()
     }, null, 2));
@@ -106,7 +115,7 @@ async function main() {
     try {
       await target.unmapImage({source: codeSource, destination: CODE_BASE,
         bytes: code.length});
-      if (!keep) for (const block of [codeSource, heap, stack, ctxBlock, logRing, logStruct]) {
+      if (!keep) for (const block of [codeSource, persist, heap, stack, ctxBlock, logRing, logStruct]) {
         if (block) await target.free(block).catch(error => log.warn('free: ' + error.message));
       }
     } catch (error) {

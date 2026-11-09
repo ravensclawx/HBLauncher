@@ -113,25 +113,24 @@ static inline uint64_t hbx_cntfrq(void) { return 1000000000ull; }
  * The first call anchors the hardware counter to the host-provided session
  * time (ctx->now_ns).  Later calls only add the counter delta, so the value
  * stays small and precise instead of mixing "time since boot" with the
- * session origin.  The anchor lives in the image's .bss, which the loader
- * keeps mapped across entries, so time does not jump when the launcher
- * resumes after an app. */
-static uint64_t g_time_base_ticks;
-static uint64_t g_time_base_ns;
-static uint32_t g_time_ready;
-
+ * session origin.  The anchor lives in the image's persist block
+ * (struct hbx_persist at ctx->data_base), which the loader keeps allocated
+ * across entries, so time does not jump when the launcher resumes after an
+ * app.  Without a persist block the helper degrades to ctx->now_ns. */
 uint64_t hbx_now_ns(const struct hbx_ctx *ctx) {
+    struct hbx_persist *persist = hbx_persist_of(ctx);
     uint64_t hz = ctx && ctx->tick_hz ? ctx->tick_hz : hbx_cntfrq();
     uint64_t ticks = hbx_tick();
     uint64_t delta;
-    if (!g_time_ready) {
-        g_time_base_ticks = ticks;
-        g_time_base_ns = ctx ? ctx->now_ns : 0;
-        g_time_ready = 1;
+    if (!persist) return ctx ? ctx->now_ns : 0;
+    if (!persist->time_ready) {
+        persist->time_base_ticks = ticks;
+        persist->time_base_ns = ctx ? ctx->now_ns : 0;
+        persist->time_ready = 1;
     }
-    if (hz == 0) return g_time_base_ns;
-    delta = ticks - g_time_base_ticks;
-    return g_time_base_ns + (delta / hz) * 1000000000ull +
+    if (hz == 0) return persist->time_base_ns;
+    delta = ticks - persist->time_base_ticks;
+    return persist->time_base_ns + (delta / hz) * 1000000000ull +
            ((delta % hz) * 1000000000ull) / hz;
 }
 
@@ -140,8 +139,9 @@ uint64_t hbx_pace(const struct hbx_ctx *ctx, uint64_t *deadline, uint32_t hz) {
      * present on a freshly acquired image kills the process (verified on
      * hardware, 2026-10-28).  Enforce a minimum gap of 15 ms between frames in
      * addition to the requested period.  The launcher uses the same discipline
-     * in its own loop. */
-    static uint64_t last_frame_ns;
+     * in its own loop.  The gap bookkeeping lives in the persist block so it
+     * survives re-entries; without one it is skipped. */
+    struct hbx_persist *persist = hbx_persist_of(ctx);
     const uint64_t minimum_gap = 15000000ull;
     uint64_t period;
     uint64_t now;
@@ -160,10 +160,10 @@ uint64_t hbx_pace(const struct hbx_ctx *ctx, uint64_t *deadline, uint32_t hz) {
         }
     }
     target = *deadline;
-    if (last_frame_ns && target < last_frame_ns + minimum_gap)
-        target = last_frame_ns + minimum_gap;
+    if (persist && persist->pace_last_ns && target < persist->pace_last_ns + minimum_gap)
+        target = persist->pace_last_ns + minimum_gap;
     if (target > now) hbx_sleep_ns(target - now);
-    last_frame_ns = hbx_now_ns(ctx);
+    if (persist) persist->pace_last_ns = hbx_now_ns(ctx);
     return now;
 }
 
@@ -539,24 +539,28 @@ static int nul_within(const char *text, uint64_t limit) {
 
 const void *hbx_asset(const struct hbx_ctx *ctx, const char *name, uint32_t *size) {
     const struct hbx_asset_table *table;
+    uint64_t base, region;
     uint32_t i;
     if (size) *size = 0;
-    if (!ctx || !ctx->assets || !ctx->data_base || !ctx->data_size || !name) return NULL;
-    table = (const struct hbx_asset_table *)(uintptr_t)ctx->assets;
+    if (!ctx || !ctx->assets || !name) return NULL;
+    base = ctx->assets;
+    table = (const struct hbx_asset_table *)(uintptr_t)base;
     if (table->magic != HBX_ASSET_MAGIC) return NULL;
     if (table->count > HBX_MAX_ASSETS) return NULL;
+    /* The loader records the total table bytes in reserved[0]; every offset
+       the entries carry must stay inside that region. */
+    region = table->reserved[0];
+    if (region == 0) return NULL;
     for (i = 0; i < table->count; i++) {
         const struct hbx_asset_entry *entry = &table->entries[i];
         const char *candidate;
-        /* Every offset must stay inside the region the loader described. */
-        if (entry->name_off >= ctx->data_size) continue;
-        if (entry->data_off > ctx->data_size ||
-            entry->size > ctx->data_size - entry->data_off) continue;
-        candidate = (const char *)(uintptr_t)(ctx->data_base + entry->name_off);
-        if (!nul_within(candidate, ctx->data_size - entry->name_off)) continue;
+        if (entry->name_off >= region) continue;
+        if (entry->data_off > region || entry->size > region - entry->data_off) continue;
+        candidate = (const char *)(uintptr_t)(base + entry->name_off);
+        if (!nul_within(candidate, region - entry->name_off)) continue;
         if (hbx_streq(candidate, name)) {
             if (size) *size = entry->size;
-            return (const void *)(uintptr_t)(ctx->data_base + entry->data_off);
+            return (const void *)(uintptr_t)(base + entry->data_off);
         }
     }
     return NULL;

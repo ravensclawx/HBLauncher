@@ -28,6 +28,11 @@ int main(void) {
     printf("    \"icons_bytes\": %zu,\n", offsetof(struct hbx_ctx, icons_bytes));
     printf("    \"audio\": %zu\n", offsetof(struct hbx_ctx, audio));
     printf("  },\n");
+    printf("  \"persist\": {\n");
+    printf("    \"timeReady\": %zu,\n", offsetof(struct hbx_persist, time_ready));
+    printf("    \"reserved0\": %zu,\n", offsetof(struct hbx_persist, reserved[0]));
+    printf("    \"bytes\": %zu\n", sizeof(struct hbx_persist));
+    printf("  },\n");
     printf("  \"gpu\": {\n");
     GFIELD(instance); GFIELD(physical); GFIELD(device); GFIELD(queue);
     GFIELD(queue_family); GFIELD(image_count); GFIELD(width); GFIELD(height);

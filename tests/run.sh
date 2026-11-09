@@ -22,6 +22,9 @@ echo "== hardware probe (mock backend) =="
 echo "== host lifecycle =="
 "$NODE" tests/host/lifecycle.test.cjs
 
+echo "== live target (payload-faithful fake) =="
+"$NODE" tests/host/live-target.test.cjs
+
 echo "== launcher navigation logic =="
 mkdir -p build/tests
 gcc -std=gnu11 -O2 -D_GNU_SOURCE -Wall -Wextra -Werror \

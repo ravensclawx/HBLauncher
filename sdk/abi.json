@@ -41,6 +41,11 @@
     "icons_bytes": 584,
     "audio": 592
   },
+  "persist": {
+    "timeReady": 16,
+    "reserved0": 32,
+    "bytes": 48
+  },
   "gpu": {
     "instance": 0,
     "physical": 8,

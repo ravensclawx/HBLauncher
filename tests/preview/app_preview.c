@@ -351,13 +351,15 @@ static void mock_touch(struct hbx_touch_state *state) {
     put32(bytes + 0x18 + 12, 300);   /* y */
 }
 
-/* PREVIEW_ASSETS="dir:.ext": an hbx_asset_table at data_base, files after it. */
+/* PREVIEW_ASSETS="dir:.ext": an hbx_asset_table in the data region,
+   files after it.  The table starts one page in so the persist header
+   (struct hbx_persist, the SDK time anchors) at data_base + 0 is intact. */
 static void load_assets(void) {
     const char *spec = getenv("PREVIEW_ASSETS");
     char dir[256];
     const char *colon;
     struct hbx_asset_table *table;
-    unsigned char *base = (unsigned char *)(uintptr_t)ctx.data_base;
+    unsigned char *base = (unsigned char *)(uintptr_t)(ctx.data_base + 4096);
     size_t cursor = (sizeof(struct hbx_asset_table) + 15u) & ~(size_t)15u;
     char names[HBX_MAX_ASSETS][256];
     int count = 0, i, j;
@@ -383,6 +385,7 @@ static void load_assets(void) {
     table = (struct hbx_asset_table *)base;
     memset(table, 0, sizeof *table);
     table->magic = HBX_ASSET_MAGIC;
+    table->reserved[0] = (uint32_t)(ctx.data_size - 4096);
     for (i = 0; i < count; i++) {
         char path[600];
         FILE *f;
@@ -401,7 +404,7 @@ static void load_assets(void) {
         fclose(f);
         table->count++;
     }
-    ctx.assets = ctx.data_base;
+    ctx.assets = ctx.data_base + 4096;
     printf("preview: %u asset(s) from %s\n", table->count, dir);
 }
 

@@ -29,6 +29,14 @@ uint64_t hbx_now_ns(const struct hbx_ctx *ctx);
 /* Raw CNTFRQ/CNTVCT tick, in the units of ctx->tick_hz. */
 uint64_t hbx_tick(void);
 
+/* The image's persist block (struct hbx_persist header at ctx->data_base),
+ * or NULL when the loader provided none (the helpers above then degrade). */
+static inline struct hbx_persist *hbx_persist_of(const struct hbx_ctx *ctx) {
+    if (!ctx || !ctx->data_base || ctx->data_size < sizeof(struct hbx_persist))
+        return (struct hbx_persist *)0;
+    return (struct hbx_persist *)(uintptr_t)ctx->data_base;
+}
+
 /* Park the calling thread; nanoseconds, firmware sleep (SVC 0x0b). */
 void hbx_sleep_ns(uint64_t nanoseconds);
 

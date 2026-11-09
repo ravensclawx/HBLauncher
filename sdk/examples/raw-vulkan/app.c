@@ -263,7 +263,7 @@ static void destroy(struct demo *demo, const struct hbx_vk_dispatch *d) {
 }
 
 int hbx_app_main(const struct hbx_ctx *ctx) {
-    static struct demo demo;
+    struct demo demo;
     const struct hbx_vk_dispatch *d = hbx_vk(ctx);
     struct hbx_input_state input;
     VkCommandPoolCreateInfo pool_info;

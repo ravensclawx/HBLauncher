@@ -1,7 +1,7 @@
 # HBLauncher Native SDK
 
 Build real CPU + Vulkan apps for the launcher.  An app is a freestanding
-AArch64 image with two parts (`code.bin` RX, `data.bin`/`.bss` RW) plus a
+AArch64 image (`code.bin` RX) plus a loader-placed RW persist block, a
 manifest, assets and an icon.  The launcher maps it, hands it a versioned
 context, and gets control back when it returns.
 
@@ -197,8 +197,10 @@ launcher but executed by their proven loaders for a finite session.  See
 
 ## Limits and rules
 
-* No libc, no dynamic linking, no writable globals outside the mapped data
-  region.  The SDK runtime is freestanding.
+* No libc, no dynamic linking, no writable globals at all: the payload can
+  only map RX pages, so persistent state goes in the persist block at
+  `ctx->data_base` (start with `struct hbx_persist`; size it with
+  `limits.persist_bytes`).  The SDK runtime is freestanding.
 * Keep the image position-dependent: link at the package's code base.
 * Do not touch `ctx` fields you do not own; treat `hbx_ctx` as read-only
   except `status`, `exit`, `frame`.

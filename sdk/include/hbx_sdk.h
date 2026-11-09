@@ -184,8 +184,9 @@ struct hbx_catalog {
 };
 #define HBX_CATALOG_MAGIC 0x47415443u /* "CTAG" */
 
-/* Package asset table, placed by the loader at data_base + 0 and addressed by
- * ctx->assets.  Name and data offsets are relative to ctx->data_base. */
+/* Package asset table: a loader-allocated RW block addressed by ctx->assets.
+ * Name and data offsets are relative to the table base; reserved[0] carries
+ * the total table bytes for bounds checks. */
 struct hbx_asset_entry {
     uint32_t name_off;
     uint32_t data_off;
@@ -314,6 +315,30 @@ struct hbx_audio {
 _Static_assert(sizeof(struct hbx_audio) == 104, "hbx_audio size");
 
 /* ------------------------------------------------------------------ */
+/* Image persist block                                                */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Per-image writable state.  The console payload can only map pages RX, so
+ * an image's mutable state lives in a loader-allocated Normal/RW block:
+ * ctx->data_base / ctx->data_size.  The loader zero-fills it once and keeps
+ * it allocated while the image stays loaded, so fields survive re-entries.
+ *
+ * The first bytes are reserved for the SDK runtime's cross-entry scratch; an
+ * image that needs persistent state of its own defines a struct starting
+ * with this header and maps it onto ctx->data_base.
+ */
+struct hbx_persist {
+    uint64_t time_base_ticks;   /* hbx_now_ns counter anchor */
+    uint64_t time_base_ns;      /* hbx_now_ns session-time anchor */
+    uint32_t time_ready;        /* the anchors are valid once set */
+    uint32_t reserved0;
+    uint64_t pace_last_ns;      /* hbx_pace minimum-gap bookkeeping */
+    uint64_t reserved[2];       /* future SDK scratch */
+};
+_Static_assert(sizeof(struct hbx_persist) == 48, "hbx_persist size");
+
+/* ------------------------------------------------------------------ */
 /* The application context                                            */
 /* ------------------------------------------------------------------ */
 
@@ -330,8 +355,8 @@ struct hbx_ctx {
     /* 0x038 */ uint64_t uptime_ns;     /* in: ns since the launcher started */
     /* 0x040 */ uint64_t heap_base;
     /* 0x048 */ uint64_t heap_size;
-    /* 0x050 */ uint64_t data_base;    /* package asset region (loader-owned RW) */
-    /* 0x058 */ uint64_t data_size;   /* bytes in that region */
+    /* 0x050 */ uint64_t data_base;    /* image persist block (loader-owned RW) */
+    /* 0x058 */ uint64_t data_size;   /* bytes in that block */
     /* 0x060 */ uint64_t code_base;
     /* 0x068 */ uint64_t code_size;
     /* 0x070 */ uint64_t stack_base;    /* host-provided app stack */

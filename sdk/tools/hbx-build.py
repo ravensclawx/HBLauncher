@@ -262,6 +262,10 @@ def main() -> int:
     data = data_bin.read_bytes()
     bss_start = symbols.get("__bss_start", data_base + len(data))
     bss_end = symbols.get("__bss_end", bss_start)
+    if len(data) > 0 or bss_end > bss_start:
+        fail("image has writable .data/.bss; the console payload can only map "
+             "RX pages - keep all mutable state in the loader persist block "
+             "(ctx->data_base, sized by manifest limits.persist_bytes)")
     if symbols.get("_start") != code_base:
         fail(f"entry is 0x{symbols.get('_start', 0):x}, expected 0x{code_base:x}")
     if symbols.get("hbx_app_main") is None:

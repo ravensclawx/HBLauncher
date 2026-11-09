@@ -7,7 +7,15 @@
  *
  * Both expose the same small surface:
  *   prepare() allocate() free() write() read() query()
- *   mapImage() unmapImage() flushCode() call()
+ *   mapImage() unmapImage() flushCode() call() placeData()
+ *
+ * ns2jb (kurumuz fork, commit 81d5bb1) accepts command IDs 0x524f0010
+ * through 0x524f0016 only.  The bulk range commands used before
+ * (map RX range, map RW range, unmap range) are rejected, so images are
+ * mapped one page at a time with CMD_MAP_PAGE
+ * (0x524f0012: page-aligned Normal/RW source, free destination, exactly
+ * one page per call; the payload finalises the destination RX itself) and
+ * released one page at a time with CMD_UNMAP_PAGE (0x524f0013).
  *
  * Nothing above this layer knows which backend it is talking to, so the whole
  * lifecycle (map launcher -> frame loop -> launch app -> return) is exercised
@@ -18,16 +26,19 @@ const {HostError, check, hex} = require('./common.cjs');
 
 const PAGE = 0x1000;
 const HANDLE = 0xffff8001;
-const CMD_MAP_RX_RANGE = 0x524f001a;
-const CMD_MAP_RW_RANGE = 0x524f001b;
-const CMD_UNMAP_RANGE = 0x524f001c;
+/* ns2jb (kurumuz fork, commit 81d5bb1) accepts 0x524f0010-0x524f0016 only:
+ * CMD_MAP_PAGE maps one page from a page-aligned Normal/RW source into a free
+ * destination and finalises it RX (process.c 0x524f0012), CMD_UNMAP_PAGE
+ * releases one page (0x524f0013) and CMD_PATCH writes 16 bytes with cache
+ * publish and readback (0x524f0014).  The bulk range map/unmap commands
+ * used before are not implemented by any published ns2jb and are never sent. */
+const CMD_MAP_PAGE = 0x524f0012;
 const CMD_UNMAP_PAGE = 0x524f0013;
 const CMD_PATCH = 0x524f0014;
 const SDK_ALLOCATE = 5732112;
 /* operator delete(void*) -> free().  5797280 (used before) is memset, which
    made every release a silent no-op and leaked each launch's blocks. */
 const SDK_FREE = 5616480;
-const MAX_RANGE_PAGES = 16384;
 
 class LiveTarget {
   constructor(options) {
@@ -46,7 +57,7 @@ class LiveTarget {
     const {Client} = require(path.join(runDir, 'switch2/process/client.cjs'));
     target.memory = await connect();
     target.client = await new Client().open();
-    /* Bulk mapping makes thousands of calls; keep the audit journal in memory. */
+    /* Page-by-page unmap makes thousands of calls; keep the audit journal in memory. */
     target.client.save = async () => {};
     const app = await target.client.info(HANDLE);
     check(!Number(app.result) && Number(app.pid) > 0, 'cannot identify the application process');
@@ -97,32 +108,64 @@ class LiveTarget {
     return {result: Number(BigInt.asIntN(32, reply.result)), raw: reply.result};
   }
 
+  /* ns2jb publishes only a single-page map (0x524f0012): the source must be a
+   * page-aligned Normal/RW allocation, the destination free, the size exactly
+   * PAGE.  The payload finalises the destination RX itself (process_permission
+   * 5) and rolls a failed page back on its own; this loop rolls back the pages
+   * mapped before the failure so the destination is left free. */
   async mapRange({source, destination, pages, permission}) {
-    check(pages > 0 && pages <= MAX_RANGE_PAGES, 'range page count ' + pages);
-    const id = permission === 5 ? CMD_MAP_RX_RANGE : CMD_MAP_RW_RANGE;
-    const reply = await this.client.request(id, HANDLE, [this.pid, source, destination, pages]);
-    const v = reply.values.map(Number);
-    const mapped = v[3] || 0;
-    check(!Number(reply.result) && mapped === pages,
-      `map ${permission === 5 ? 'RX' : 'RW'} ${hex(destination)} failed ` +
-      `(${mapped}/${pages} pages, result ${Number(reply.result)})`);
-    return {mapped, mode: v[8] || 0};
+    check(pages > 0, 'map page count ' + pages);
+    check(source % PAGE === 0 && destination % PAGE === 0, 'map range not page aligned');
+    const mapped = [];
+    for (let page = 0; page < pages; page++) {
+      const at = destination + page * PAGE;
+      const reply = await this.client.request(CMD_MAP_PAGE, HANDLE,
+        [this.pid, source + page * PAGE, at, PAGE]);
+      const v = reply.values.map(Number);
+      if (Number(reply.result) || v[3] || v[4]) {
+        for (const done of mapped) {
+          await this.client.request(CMD_UNMAP_PAGE, HANDLE,
+            [this.pid, source + done * PAGE, destination + done * PAGE, PAGE]).catch(() => {});
+        }
+        throw new HostError(`map page ${hex(at)} failed (result ${Number(reply.result)}, ` +
+          `mapResult ${v[3] || 0}, permissionResult ${v[4] || 0}, ` +
+          `rollbackResult ${v[5] || 0})`, 'map');
+      }
+      mapped.push(page);
+    }
+    return {mapped: mapped.length, mode: permission};
   }
 
+  /* ns2jb has no bulk range unmap; release pages one at a time with
+   * CMD_UNMAP_PAGE, which it accepts. */
   async unmapRange({source, destination, pages}) {
-    const reply = await this.client.request(CMD_UNMAP_RANGE, HANDLE,
-      [this.pid, source, destination, pages]);
-    const v = reply.values.map(Number);
-    check(!Number(reply.result) && !v[6],
-      `unmap ${hex(destination)} failed (result ${Number(reply.result)}, ` +
-      `unmapped ${v[3]}/${pages}, failPage ${v[4]}, failResult ${v[5]}, ` +
-      `failures ${v[6]}, source ${hex(source)})`);
-    return {unmapped: v[3] || 0};
+    let lastError = 0;
+    let page = 0;
+    for (; page < pages; page++) {
+      const reply = await this.client.request(CMD_UNMAP_PAGE, HANDLE,
+        [this.pid, source + page * PAGE, destination + page * PAGE, PAGE]);
+      if (Number(reply.result)) { lastError = Number(reply.result); break; }
+    }
+    if (lastError) {
+      throw new Error(`unmap page-by-page failed at page ${page}, result ${lastError}`);
+    }
+    return {unmapped: pages};
   }
 
-  /* Map one contiguous image into one contiguous free destination. */
+  /* Map one contiguous image into one contiguous free destination, one
+     page per 0x524f0012 call.  The destination must be free: the payload
+     query_processes it and fails when target.type != 0.  The payload also
+     finalises every destination page RX (process_permission 5 is hardcoded
+     inside the command), so mapImage is an RX-only primitive: asking for a
+     writable mapping here would silently produce RX pages whose first write
+     faults.  Writable image state is placed with placeData() instead. */
   async mapImage({source, destination, bytes, permission}) {
+    check(permission === 5, 'mapImage can only produce RX pages ' +
+      '(the payload hardcodes process_permission 5 inside 0x524f0012); ' +
+      `place writable data with placeData(), got permission ${permission}`);
     const pages = Math.ceil(bytes / PAGE);
+    check(pages > 0 && pages <= 2048, 'map page count ' + pages +
+      ' at ' + hex(destination) + ' (relink at a different --code-base)');
     const region = await this.query(destination);
     /* region.size counts from region.address, not from the destination. */
     const room = Number(region.address) + Number(region.size) - destination;
@@ -131,25 +174,24 @@ class LiveTarget {
       'A stranded previous app image or another mapping (e.g. the exploit ' +
       'helper) already owns this base; rebuild the app at a different ' +
       '--code-base, or restart SmileBASIC if a previous launch leaked it.');
-    /* The range command maps at most MAX_RANGE_PAGES per call. */
-    for (let done = 0; done < pages; done += MAX_RANGE_PAGES) {
-      const n = Math.min(MAX_RANGE_PAGES, pages - done);
-      await this.mapRange({source: source + done * PAGE, destination: destination + done * PAGE,
-        pages: n, permission});
-    }
     const record = {source, destination, pages, permission, bytes};
     this.mapped.push(record);
+    try {
+      await this.mapRange({source, destination, pages, permission});
+    } catch (error) {
+      this.mapped = this.mapped.filter(item => item !== record);
+      throw error;
+    }
     return record;
   }
 
-  /* Cache maintenance: the bulk map finalises permissions but does not
-     publish new code.  One patch per 64-byte line flushes and invalidates the
+  /* Cache maintenance: one patch per 64-byte line flushes and invalidates the
      whole line, so a 64-byte stride covers the image. */
   async flushCode(destination, image) {
-    /* The range map's permission change publishes the new code: a launcher
-     * mapped without any per-line publish ran 60 frames correctly on hardware
-     * (2026-10-28), and mapping dropped from ~94 s to ~0.25 s.  Set
-     * HBL_PUBLISH=1 to force the old per-line flush (e.g. after rewriting code
+    /* The single-page map's permission change publishes the new code: a
+     * launcher mapped without any per-line publish ran 60 frames correctly on
+     * hardware (2026-10-28), and 0x524f0012 also calls process_permission.
+     * Set HBL_PUBLISH=1 to force the per-line flush (e.g. after rewriting code
      * at an address whose lines may still be cached). */
     if (process.env.HBL_PUBLISH !== '1') return {calls: 0, skipped: true};
     let calls = 0;
@@ -192,55 +234,32 @@ class LiveTarget {
   async unmapImage(entry) {
     const pages = entry.pages || Math.ceil((entry.bytes || 0) / PAGE);
     check(pages > 0, 'unmap needs a page count for ' + hex(entry.destination));
-    /* The bulk unmap command validates the source range against the source
-     * block's reported size and returned 0xD401 for an app image whose source
-     * was exactly page-rounded.  The single-page command has no such check, so
-     * unmap page by page (cheap: a handful of pages, one round trip each) and
-     * fall back to the bulk command if the per-page form is rejected. */
-    /* Large images: one bulk command (sources carry a slack page, which the
-     * bulk command needs), per-page as the fallback. */
-    if (pages > 64) {
-      try {
-        for (let done = 0; done < pages; done += MAX_RANGE_PAGES) {
-          const n = Math.min(MAX_RANGE_PAGES, pages - done);
-          await this.unmapRange({source: entry.source + done * PAGE,
-            destination: entry.destination + done * PAGE, pages: n});
-        }
-        this.mapped = this.mapped.filter(item =>
-          !(item.destination === entry.destination && item.source === entry.source));
-        return;
-      } catch (error) {
-        this.log?.warn('bulk unmap failed, unmapping page by page: ' + error.message);
-      }
-    }
-    /* Page-by-page takes ~30 ms a page: for big images that is minutes of
-     * blocked host.  Leave them mapped (the caller then keeps the source)
-     * and report it; relink at another base or restart SmileBASIC. */
-    if (pages > 2048) {
-      throw new Error(`bulk unmap failed; leaving ${pages} pages at ${hex(entry.destination)} mapped`);
-    }
-    let lastError = 0;
-    for (let i = 0; i < pages; i++) {
-      const reply = await this.client.request(CMD_UNMAP_PAGE, HANDLE,
-        [this.pid, entry.source + i * PAGE, entry.destination + i * PAGE, PAGE]);
-      if (Number(reply.result)) { lastError = Number(reply.result); break; }
-    }
-    if (lastError) {
-      try {
-        for (let done = 0; done < pages; done += MAX_RANGE_PAGES) {
-          const n = Math.min(MAX_RANGE_PAGES, pages - done);
-          await this.unmapRange({source: entry.source + done * PAGE,
-            destination: entry.destination + done * PAGE, pages: n});
-        }
-        lastError = 0;
-      } catch (error) {
-        throw new Error(`unmap ${hex(entry.destination)} failed ` +
-          `(per-page result ${hex(lastError)}): ${error.message}`);
-      }
-    }
-    /* Drop the same object that mapImage stored. */
+    /* ns2jb's only unmap form is the single-page command (0x524f0013), so
+     * release the image one page at a time.  A failure leaves the pages in
+     * place; the caller keeps the source block and reports it. */
+    await this.unmapRange({source: entry.source, destination: entry.destination, pages});
     this.mapped = this.mapped.filter(item =>
       !(item.destination === entry.destination && item.source === entry.source));
+  }
+
+  /* Place an image's writable region: an SDK-allocated Normal/RW block,
+     written directly.  This is the only way to give an image writable memory
+     - the payload has no RW map - so the block address is handed to the
+     image through ctx (data_base/data_size) instead of a link-time base.
+     `bytes` is the region size the image needs; `content` (optional) is
+     written at offset 0 (data.bin).  The rest stays zero: SDK allocations
+     are not guaranteed zero, so the whole block is written first. */
+  async placeData({bytes, content}) {
+    check(Number.isInteger(bytes) && bytes > 0, 'data region size ' + bytes);
+    check(!content || content.length <= bytes, 'data content exceeds its region');
+    const region = Buffer.alloc(bytes);
+    if (content && content.length) content.copy(region, 0, 0, Math.min(content.length, bytes));
+    const block = await this.allocate(bytes);
+    await this.write(block, region);
+    const info = await this.query(block);
+    check(Number(info.type) === 5 && Number(info.permissions) === 3,
+      'data block is not Normal/RW: ' + JSON.stringify(info));
+    return block;
   }
 
   async close() {
@@ -307,20 +326,43 @@ class MockTarget {
     if (region) return {type: region.type, size: region.size, permissions: region.permissions};
     return {type: 0, size: 0x10000000, permissions: 0};
   }
+  /* Mirrors the payload's 0x524f0012 checks: page-aligned source and
+     destination, source Normal/RW and covering every mapped page, free
+     destination.  The payload finalises the destination RX (permission 5). */
   async mapImage({source, destination, bytes, permission}) {
+    check(permission === 5, 'mapImage is RX-only; use placeData for writable data');
     const pages = Math.ceil(bytes / PAGE);
-    const sourceRegion = this.regionOf(source, bytes);
-    check(sourceRegion, 'mock map source outside a region');
+    check(pages > 0, 'mock map needs bytes');
+    check(source % PAGE === 0 && destination % PAGE === 0,
+      'mock map needs page-aligned source and destination');
+    const sourceRegion = this.regionOf(source, pages * PAGE);
+    check(sourceRegion, 'mock map source does not cover ' + pages + ' page(s)');
+    check(sourceRegion.type === 5 && sourceRegion.permissions === 3,
+      'mock map source is not a Normal/RW allocation');
+    const occupied = this.regions.some(region =>
+      destination < region.address + region.size &&
+      region.address < destination + pages * PAGE);
+    check(!occupied, 'mock map destination is not free');
     const copy = Buffer.from(sourceRegion.data.subarray(source - sourceRegion.address,
       source - sourceRegion.address + pages * PAGE));
-    this.regions.push({address: destination, size: pages * PAGE, type: 0,
-      permissions: permission, data: copy, mapped: true});
+    this.regions.push({address: destination, size: pages * PAGE, type: 5,
+      permissions: 5, data: copy, mapped: true});
     this.mappedRanges.push({source, destination, pages, permission});
     return {pages};
   }
   async unmapImage(entry) {
-    const index = this.regions.findIndex(region => region.address === entry.destination && region.mapped);
+    const index = this.regions.findIndex(region => region.address === entry.destination &&
+      region.mapped);
     if (index >= 0) this.regions.splice(index, 1);
+  }
+  /* Mirrors LiveTarget.placeData: an RW allocation written directly. */
+  async placeData({bytes, content}) {
+    check(Number.isInteger(bytes) && bytes > 0, 'data region size ' + bytes);
+    const region = Buffer.alloc(bytes);
+    if (content && content.length) content.copy(region, 0, 0, Math.min(content.length, bytes));
+    const block = await this.allocate(bytes);
+    await this.write(block, region);
+    return block;
   }
   async flushCode(destination, image) {
     this.patchCalls += Math.ceil(image.length / 64);
@@ -334,4 +376,5 @@ class MockTarget {
   async close() {}
 }
 
-module.exports = {LiveTarget, MockTarget, PAGE, HANDLE, MAX_RANGE_PAGES};
+module.exports = {LiveTarget, MockTarget, PAGE, HANDLE, SDK_ALLOCATE, SDK_FREE,
+  CMD_MAP_PAGE, CMD_UNMAP_PAGE, CMD_PATCH};

@@ -200,16 +200,22 @@ static void test_assets(struct hbx_ctx *ctx) {
     uint32_t size = 0;
     const void *data;
     struct hbx_asset_table *table;
-    char *region = (char *)(uintptr_t)ctx->data_base;
+    char *base;
 
+    /* The asset table is self-describing: it lives in its own region,
+       offsets are table-relative and reserved[0] carries the region bytes
+       (the persist block at data_base and the asset block are distinct). */
+    ctx->assets = ctx->data_base;
+    base = (char *)(uintptr_t)ctx->assets;
     table = (struct hbx_asset_table *)(uintptr_t)ctx->assets;
     table->magic = HBX_ASSET_MAGIC;
     table->count = 1;
+    table->reserved[0] = (uint32_t)ctx->data_size;
     table->entries[0].name_off = 512;
     table->entries[0].data_off = 1024;
     table->entries[0].size = 16;
-    hbx_memcpy(region + 512, "levels/one.bin", 15);
-    hbx_memset(region + 1024, 0xab, 16);
+    hbx_memcpy(base + 512, "levels/one.bin", 15);
+    hbx_memset(base + 1024, 0xab, 16);
 
     data = hbx_asset(ctx, "levels/one.bin", &size);
     EXPECT(data != NULL && size == 16);

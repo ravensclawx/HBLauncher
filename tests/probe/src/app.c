@@ -11,6 +11,7 @@
  *   3  + logging
  *   4  + heap init / alloc / free
  *   5  + formatted logging (the full path)
+ *   6  + persist block write/readback (the loader-placed RW region)
  */
 #include "hbx_sdk.h"
 #include "hbx_app.h"
@@ -41,6 +42,22 @@ int hbx_app_main(const struct hbx_ctx *ctx) {
         hbx_logf(ctx, "probe: ctx=%p heap=%p size=%u", (void *)(uintptr_t)ctx,
                  (void *)(uintptr_t)ctx->heap_base, (unsigned)ctx->size);
         reached = 5;
+    }
+    if (step >= 6) {
+        /* The persist block is the image's writable state: an SDK-allocated
+           Normal/RW block at ctx->data_base.  Write a pattern well past the
+           SDK header, read it back and verify - this is the hardware gate
+           for the RW placement (mapped pages are RX and would fault). */
+        struct hbx_persist *persist = hbx_persist_of(ctx);
+        volatile uint64_t *scratch;
+        uint64_t i;
+        if (!persist || ctx->data_size < 1024u) return HBX_ERR_ABI;
+        scratch = (volatile uint64_t *)(void *)((unsigned char *)persist + 512);
+        for (i = 0; i < 64u; i++) scratch[i] = 0x5A00000000000000ull | i;
+        for (i = 0; i < 64u; i++)
+            if (scratch[i] != (0x5A00000000000000ull | i)) return HBX_ERR_INTERNAL;
+        hbx_logf(ctx, "probe: persist rw ok (%u bytes)", (unsigned)ctx->data_size);
+        reached = 6;
     }
 
     mutable_ctx->frame = PROBE_MARKER;
