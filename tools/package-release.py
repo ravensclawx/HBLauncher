@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Package current public source without Git history or local output."""
+import getpass
 import io
 import re
 import subprocess
@@ -9,7 +10,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 EXCLUDED = {'.git', 'build', '__pycache__', 'node_modules', 'release',
             'reference', 'run', 'saves'}
-PRIVATE = re.compile(rb'(?i)(?:/h[o]me/[^/\s]+/|/Users/[^/\s]+/)')
+# workstation paths, and this computer's user name (read here, never written down)
+PRIVATE = re.compile(rb'(?i)(?:/h[o]me/[^/\s]+/|/Users/[^/\s]+/|' + re.escape(getpass.getuser().encode()) + rb')')
 
 
 def main():
